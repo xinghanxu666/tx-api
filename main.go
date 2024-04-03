@@ -28,7 +28,7 @@ var indexPage []byte
 
 func main() {
 	common.SetupLogger()
-	common.SysLog("New API " + common.Version + " started")
+	common.SysLog("Tianxu API " + common.Version + " started")
 	if os.Getenv("GIN_MODE") != "debug" {
 		gin.SetMode(gin.ReleaseMode)
 	}
