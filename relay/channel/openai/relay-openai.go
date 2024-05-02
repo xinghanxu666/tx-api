@@ -16,9 +16,10 @@ import (
 	"time"
 )
 
-func OpenaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*dto.OpenAIErrorWithStatusCode, string) {
+func OpenaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*dto.OpenAIErrorWithStatusCode, string, int) {
 	//checkSensitive := constant.ShouldCheckCompletionSensitive()
 	var responseTextBuilder strings.Builder
+	toolCount := 0
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {
@@ -49,7 +50,7 @@ func OpenaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*d
 			if data[:6] != "data: " && data[:6] != "[DONE]" {
 				continue
 			}
-			dataChan <- data
+			common.SafeSendString(dataChan, data)
 			data = data[6:]
 			if !strings.HasPrefix(data, "[DONE]") {
 				streamItems = append(streamItems, data)
@@ -67,14 +68,32 @@ func OpenaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*d
 					err := json.Unmarshal(common.StringToByteSlice(item), &streamResponse)
 					if err == nil {
 						for _, choice := range streamResponse.Choices {
-							responseTextBuilder.WriteString(choice.Delta.Content)
+							responseTextBuilder.WriteString(choice.Delta.GetContentString())
+							if choice.Delta.ToolCalls != nil {
+								if len(choice.Delta.ToolCalls) > toolCount {
+									toolCount = len(choice.Delta.ToolCalls)
+								}
+								for _, tool := range choice.Delta.ToolCalls {
+									responseTextBuilder.WriteString(tool.Function.Name)
+									responseTextBuilder.WriteString(tool.Function.Arguments)
+								}
+							}
 						}
 					}
 				}
 			} else {
 				for _, streamResponse := range streamResponses {
 					for _, choice := range streamResponse.Choices {
-						responseTextBuilder.WriteString(choice.Delta.Content)
+						responseTextBuilder.WriteString(choice.Delta.GetContentString())
+						if choice.Delta.ToolCalls != nil {
+							if len(choice.Delta.ToolCalls) > toolCount {
+								toolCount = len(choice.Delta.ToolCalls)
+							}
+							for _, tool := range choice.Delta.ToolCalls {
+								responseTextBuilder.WriteString(tool.Function.Name)
+								responseTextBuilder.WriteString(tool.Function.Arguments)
+							}
+						}
 					}
 				}
 			}
@@ -104,7 +123,7 @@ func OpenaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*d
 			// wait data out
 			time.Sleep(2 * time.Second)
 		}
-		common.SafeSend(stopChan, true)
+		common.SafeSendBool(stopChan, true)
 	}()
 	service.SetEventStreamHeaders(c)
 	c.Stream(func(w io.Writer) bool {
@@ -123,10 +142,10 @@ func OpenaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*d
 	})
 	err := resp.Body.Close()
 	if err != nil {
-		return service.OpenAIErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), ""
+		return service.OpenAIErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), "", toolCount
 	}
 	wg.Wait()
-	return nil, responseTextBuilder.String()
+	return nil, responseTextBuilder.String(), toolCount
 }
 
 func OpenaiHandler(c *gin.Context, resp *http.Response, promptTokens int, model string) (*dto.OpenAIErrorWithStatusCode, *dto.Usage) {

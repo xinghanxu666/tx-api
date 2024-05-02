@@ -15,6 +15,7 @@ import (
 	"one-api/relay/constant"
 	relayconstant "one-api/relay/constant"
 	"one-api/service"
+	"strings"
 )
 
 func relayHandler(c *gin.Context, relayMode int) *dto.OpenAIErrorWithStatusCode {
@@ -42,7 +43,7 @@ func Relay(c *gin.Context) {
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
 	openaiErr := relayHandler(c, relayMode)
-	retryLogStr := fmt.Sprintf("重试：%d", channelId)
+	useChannel := []int{channelId}
 	if openaiErr != nil {
 		go processChannelError(c, channelId, openaiErr)
 	} else {
@@ -55,7 +56,7 @@ func Relay(c *gin.Context) {
 			break
 		}
 		channelId = channel.Id
-		retryLogStr += fmt.Sprintf("->%d", channel.Id)
+		useChannel = append(useChannel, channelId)
 		common.LogInfo(c.Request.Context(), fmt.Sprintf("using channel #%d to retry (remain times %d)", channel.Id, i))
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 
@@ -66,7 +67,10 @@ func Relay(c *gin.Context) {
 			go processChannelError(c, channelId, openaiErr)
 		}
 	}
-	common.LogInfo(c.Request.Context(), retryLogStr)
+	if len(useChannel) > 1 {
+		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
+		common.LogInfo(c.Request.Context(), retryLogStr)
+	}
 
 	if openaiErr != nil {
 		if openaiErr.StatusCode == http.StatusTooManyRequests {
@@ -92,10 +96,21 @@ func shouldRetry(c *gin.Context, channelId int, openaiErr *dto.OpenAIErrorWithSt
 	if openaiErr.StatusCode == http.StatusTooManyRequests {
 		return true
 	}
+	if openaiErr.StatusCode == 307 {
+		return true
+	}
 	if openaiErr.StatusCode/100 == 5 {
+		// 超时不重试
+		if openaiErr.StatusCode == 504 || openaiErr.StatusCode == 524 {
+			return false
+		}
 		return true
 	}
 	if openaiErr.StatusCode == http.StatusBadRequest {
+		return false
+	}
+	if openaiErr.StatusCode == 408 {
+		// azure处理超时不重试
 		return false
 	}
 	if openaiErr.LocalError {
@@ -109,7 +124,7 @@ func shouldRetry(c *gin.Context, channelId int, openaiErr *dto.OpenAIErrorWithSt
 
 func processChannelError(c *gin.Context, channelId int, err *dto.OpenAIErrorWithStatusCode) {
 	autoBan := c.GetBool("auto_ban")
-	common.LogError(c.Request.Context(), fmt.Sprintf("relay error (channel #%d): %s", channelId, err.Error.Message))
+	common.LogError(c.Request.Context(), fmt.Sprintf("relay error (channel #%d, status code: %d): %s", channelId, err.StatusCode, err.Error.Message))
 	if service.ShouldDisableChannel(&err.Error, err.StatusCode) && autoBan {
 		channelName := c.GetString("channel_name")
 		service.DisableChannel(channelId, channelName, err.Error.Message)
@@ -145,7 +160,7 @@ func RelayMidjourney(c *gin.Context) {
 			"code":        err.Code,
 		})
 		channelId := c.GetInt("channel_id")
-		common.SysError(fmt.Sprintf("relay error (channel #%d): %s", channelId, fmt.Sprintf("%s %s", err.Description, err.Result)))
+		common.LogError(c, fmt.Sprintf("relay error (channel #%d, status code %d): %s", channelId, statusCode, fmt.Sprintf("%s %s", err.Description, err.Result)))
 	}
 }
 

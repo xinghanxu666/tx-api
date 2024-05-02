@@ -28,8 +28,8 @@ type ClaudeRequest struct {
 	Prompt            string          `json:"prompt,omitempty"`
 	System            string          `json:"system,omitempty"`
 	Messages          []ClaudeMessage `json:"messages,omitempty"`
-	MaxTokensToSample uint            `json:"max_tokens_to_sample,omitempty"`
 	MaxTokens         uint            `json:"max_tokens,omitempty"`
+	MaxTokensToSample uint            `json:"max_tokens_to_sample,omitempty"`
 	StopSequences     []string        `json:"stop_sequences,omitempty"`
 	Temperature       float64         `json:"temperature,omitempty"`
 	TopP              float64         `json:"top_p,omitempty"`

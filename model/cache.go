@@ -25,9 +25,6 @@ var token2UserId = make(map[string]int)
 var token2UserIdLock sync.RWMutex
 
 func cacheSetToken(token *Token) error {
-	if !common.RedisEnabled {
-		return token.SelectUpdate()
-	}
 	jsonBytes, err := json.Marshal(token)
 	if err != nil {
 		return err
@@ -168,7 +165,11 @@ func CacheUpdateUserQuota(id int) error {
 	if err != nil {
 		return err
 	}
-	err = common.RedisSet(fmt.Sprintf("user_quota:%d", id), fmt.Sprintf("%d", quota), time.Duration(UserId2QuotaCacheSeconds)*time.Second)
+	return cacheSetUserQuota(id, quota)
+}
+
+func cacheSetUserQuota(id int, quota int) error {
+	err := common.RedisSet(fmt.Sprintf("user_quota:%d", id), fmt.Sprintf("%d", quota), time.Duration(UserId2QuotaCacheSeconds)*time.Second)
 	return err
 }
 
@@ -272,7 +273,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, retry int) (*Cha
 
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetRandomSatisfiedChannel(group, model)
+		return GetRandomSatisfiedChannel(group, model, retry)
 	}
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()

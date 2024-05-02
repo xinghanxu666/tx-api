@@ -44,6 +44,7 @@ func InitOptionMap() {
 	common.OptionMap["DataExportEnabled"] = strconv.FormatBool(common.DataExportEnabled)
 	common.OptionMap["ChannelDisableThreshold"] = strconv.FormatFloat(common.ChannelDisableThreshold, 'f', -1, 64)
 	common.OptionMap["EmailDomainRestrictionEnabled"] = strconv.FormatBool(common.EmailDomainRestrictionEnabled)
+	common.OptionMap["EmailAliasRestrictionEnabled"] = strconv.FormatBool(common.EmailAliasRestrictionEnabled)
 	common.OptionMap["EmailDomainWhitelist"] = strings.Join(common.EmailDomainWhitelist, ",")
 	common.OptionMap["SMTPServer"] = ""
 	common.OptionMap["SMTPFrom"] = ""
@@ -62,8 +63,8 @@ func InitOptionMap() {
 	common.OptionMap["CustomCallbackAddress"] = ""
 	common.OptionMap["EpayId"] = ""
 	common.OptionMap["EpayKey"] = ""
-	common.OptionMap["Price"] = strconv.FormatFloat(common.Price, 'f', -1, 64)
-	common.OptionMap["MinTopUp"] = strconv.Itoa(common.MinTopUp)
+	common.OptionMap["Price"] = strconv.FormatFloat(constant.Price, 'f', -1, 64)
+	common.OptionMap["MinTopUp"] = strconv.Itoa(constant.MinTopUp)
 	common.OptionMap["TopupGroupRatio"] = common.TopupGroupRatio2JSONString()
 	common.OptionMap["GitHubClientId"] = ""
 	common.OptionMap["GitHubClientSecret"] = ""
@@ -91,6 +92,9 @@ func InitOptionMap() {
 	common.OptionMap["DataExportDefaultTime"] = common.DataExportDefaultTime
 	common.OptionMap["DefaultCollapseSidebar"] = strconv.FormatBool(common.DefaultCollapseSidebar)
 	common.OptionMap["MjNotifyEnabled"] = strconv.FormatBool(constant.MjNotifyEnabled)
+	common.OptionMap["MjAccountFilterEnabled"] = strconv.FormatBool(constant.MjAccountFilterEnabled)
+	common.OptionMap["MjModeClearEnabled"] = strconv.FormatBool(constant.MjModeClearEnabled)
+	common.OptionMap["MjForwardUrlEnabled"] = strconv.FormatBool(constant.MjForwardUrlEnabled)
 	common.OptionMap["CheckSensitiveEnabled"] = strconv.FormatBool(constant.CheckSensitiveEnabled)
 	common.OptionMap["CheckSensitiveOnPromptEnabled"] = strconv.FormatBool(constant.CheckSensitiveOnPromptEnabled)
 	//common.OptionMap["CheckSensitiveOnCompletionEnabled"] = strconv.FormatBool(constant.CheckSensitiveOnCompletionEnabled)
@@ -174,6 +178,8 @@ func updateOptionMap(key string, value string) (err error) {
 			common.RegisterEnabled = boolValue
 		case "EmailDomainRestrictionEnabled":
 			common.EmailDomainRestrictionEnabled = boolValue
+		case "EmailAliasRestrictionEnabled":
+			common.EmailAliasRestrictionEnabled = boolValue
 		case "AutomaticDisableChannelEnabled":
 			common.AutomaticDisableChannelEnabled = boolValue
 		case "AutomaticEnableChannelEnabled":
@@ -192,6 +198,12 @@ func updateOptionMap(key string, value string) (err error) {
 			common.DefaultCollapseSidebar = boolValue
 		case "MjNotifyEnabled":
 			constant.MjNotifyEnabled = boolValue
+		case "MjAccountFilterEnabled":
+			constant.MjAccountFilterEnabled = boolValue
+		case "MjModeClearEnabled":
+			constant.MjModeClearEnabled = boolValue
+		case "MjForwardUrlEnabled":
+			constant.MjForwardUrlEnabled = boolValue
 		case "CheckSensitiveEnabled":
 			constant.CheckSensitiveEnabled = boolValue
 		case "CheckSensitiveOnPromptEnabled":
@@ -221,17 +233,17 @@ func updateOptionMap(key string, value string) (err error) {
 	case "ServerAddress":
 		common.ServerAddress = value
 	case "PayAddress":
-		common.PayAddress = value
+		constant.PayAddress = value
 	case "CustomCallbackAddress":
-		common.CustomCallbackAddress = value
+		constant.CustomCallbackAddress = value
 	case "EpayId":
-		common.EpayId = value
+		constant.EpayId = value
 	case "EpayKey":
-		common.EpayKey = value
+		constant.EpayKey = value
 	case "Price":
-		common.Price, _ = strconv.ParseFloat(value, 64)
+		constant.Price, _ = strconv.ParseFloat(value, 64)
 	case "MinTopUp":
-		common.MinTopUp, _ = strconv.Atoi(value)
+		constant.MinTopUp, _ = strconv.Atoi(value)
 	case "TopupGroupRatio":
 		err = common.UpdateTopupGroupRatioByJSONString(value)
 	case "GitHubClientId":

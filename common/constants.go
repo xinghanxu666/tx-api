@@ -9,15 +9,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// Pay Settings
-
-var PayAddress = ""
-var CustomCallbackAddress = ""
-var EpayId = ""
-var EpayKey = ""
-var Price = 7.3
-var MinTopUp = 1
-
 var StartTime = time.Now().Unix() // unit: second
 var Version = "v0.0.0"            // this hard coding will be replaced automatically when building, no need to manually change
 var SystemName = "New API"
@@ -55,7 +46,8 @@ var TelegramOAuthEnabled = false
 var TurnstileCheckEnabled = false
 var RegisterEnabled = true
 
-var EmailDomainRestrictionEnabled = false
+var EmailDomainRestrictionEnabled = false // 是否启用邮箱域名限制
+var EmailAliasRestrictionEnabled = false  // 是否启用邮箱别名限制
 var EmailDomainWhitelist = []string{
 	"gmail.com",
 	"163.com",
@@ -214,6 +206,8 @@ const (
 	ChannelTypeZhipu_v4       = 26
 	ChannelTypePerplexity     = 27
 	ChannelTypeLingYiWanWu    = 31
+	ChannelTypeAws            = 33
+	ChannelTypeCohere         = 34
 )
 
 var ChannelBaseURLs = []string{
@@ -249,4 +243,7 @@ var ChannelBaseURLs = []string{
 	"",                                          //29
 	"",                                          //30
 	"https://api.lingyiwanwu.com",               //31
+	"",                                          //32
+	"",                                          //33
+	"https://api.cohere.ai",                     //34
 }
