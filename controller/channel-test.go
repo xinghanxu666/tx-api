@@ -53,7 +53,7 @@ func testChannel(channel *model.Channel, testModel string) (err error, openaiErr
 	}
 
 	meta := relaycommon.GenRelayInfo(c)
-	apiType := constant.ChannelType2APIType(channel.Type)
+	apiType, _ := constant.ChannelType2APIType(channel.Type)
 	adaptor := relay.GetAdaptor(apiType)
 	if adaptor == nil {
 		return fmt.Errorf("invalid api type: %d, adaptor is nil", apiType), nil
@@ -64,7 +64,21 @@ func testChannel(channel *model.Channel, testModel string) (err error, openaiErr
 		} else {
 			testModel = adaptor.GetModelList()[0]
 		}
+	} else {
+		modelMapping := *channel.ModelMapping
+		if modelMapping != "" && modelMapping != "{}" {
+			modelMap := make(map[string]string)
+			err := json.Unmarshal([]byte(modelMapping), &modelMap)
+			if err != nil {
+				openaiErr := service.OpenAIErrorWrapperLocal(err, "unmarshal_model_mapping_failed", http.StatusInternalServerError).Error
+				return err, &openaiErr
+			}
+			if modelMap[testModel] != "" {
+				testModel = modelMap[testModel]
+			}
+		}
 	}
+
 	request := buildTestRequest()
 	request.Model = testModel
 	meta.UpstreamModelName = testModel
@@ -208,7 +222,7 @@ func testAllChannels(notify bool) error {
 			if isChannelEnabled && service.ShouldDisableChannel(openaiErr, -1) && ban {
 				service.DisableChannel(channel.Id, channel.Name, err.Error())
 			}
-			if !isChannelEnabled && service.ShouldEnableChannel(err, openaiErr) {
+			if !isChannelEnabled && service.ShouldEnableChannel(err, openaiErr, channel.Status) {
 				service.EnableChannel(channel.Id, channel.Name)
 			}
 			channel.UpdateResponseTime(milliseconds)
