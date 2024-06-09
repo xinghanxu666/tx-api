@@ -27,7 +27,7 @@ jobs:
       - name: Log in to the Container registry
         uses: docker/login-action@v2
         with:
-          registry: registry.ap-southeast-1.aliyuncs.com
+          registry: registry.cn-beijing.aliyuncs.com
           username: ${{ secrets.AL_US }}
           password: ${{ secrets.AL_TOKEN }}
 
