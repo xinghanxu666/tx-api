@@ -36,7 +36,7 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: |
-            registry.ap-southeast-1.aliyuncs.com/xinghanxu/tx-api
+            registry.cn-beijing.aliyuncs.com/xinghanxu/tx-api
 
       - name: Build and push Docker images
         uses: docker/build-push-action@v3
