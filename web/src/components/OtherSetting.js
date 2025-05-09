@@ -173,7 +173,7 @@ const OtherSetting = () => {
 
       // Option 2: Use the JSON proxy approach which often works better with GitHub API
       const res = await fetch(
-        'https://api.github.com/repos/Calcium-Ion/new-api/releases/latest',
+        'https://api.github.com/repos/xinghanxu666/tx-api/releases/latest',
         {
           headers: {
             Accept: 'application/json',
