@@ -40,30 +40,30 @@ const About = () => {
   const customDescription = (
     <div style={{ textAlign: 'center' }}>
       <p>{t('可在设置页面设置关于内容，支持 HTML & Markdown')}</p>
-      {t('New API项目仓库地址：')}
+      {t('TX API项目仓库地址：')}
       <a
-        href='https://github.com/QuantumNous/new-api'
+        href='https://github.com/xinghanxu666/tx-api'
         target="_blank"
         rel="noopener noreferrer"
         className="!text-semi-color-primary"
       >
-        https://github.com/QuantumNous/new-api
+        https://github.com/xinghanxu666/tx-api
       </a>
       <p>
         <a
-          href="https://github.com/QuantumNous/new-api"
+          href="https://github.com/xinghanxu666/tx-api"
           target="_blank"
           rel="noopener noreferrer"
           className="!text-semi-color-primary"
         >
-          NewAPI
+          TXAPI
         </a> {t('© {{currentYear}}', { currentYear })} <a
-          href="https://github.com/QuantumNous"
+          href="https://github.com/xinghanxu666"
           target="_blank"
           rel="noopener noreferrer"
           className="!text-semi-color-primary"
         >
-          QuantumNous
+          xinghanxu
         </a> {t('| 基于')} <a
           href="https://github.com/songquanpeng/one-api/releases/tag/v0.5.4"
           target="_blank"
