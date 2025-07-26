@@ -187,6 +187,11 @@ docker run --name new-api -d --restart always -p 3000:3000 -e SQL_DSN="root:1234
 - [社区交流](https://docs.newapi.pro/support/community-interaction)
 - [反馈问题](https://docs.newapi.pro/support/feedback-issues)
 - [常见问题](https://docs.newapi.pro/support/faq)
+  
+## 贡献者
+<a href="https://github.com/xinghanxu666/tx-api/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=xinghanxu666/tx-api" />
+</a>
 
 ## 🌟 Star History
 
