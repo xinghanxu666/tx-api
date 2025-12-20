@@ -17,6 +17,8 @@ tiktoken_cache
 .eslintcache
 .gocache
 .cache
+web/bun.lock
 
 electron/node_modules
 electron/dist
+data/

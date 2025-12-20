@@ -2,7 +2,9 @@ package common
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -16,18 +18,47 @@ import (
 
 const KeyRequestBody = "key_request_body"
 
-func GetRequestBody(c *gin.Context) ([]byte, error) {
-	requestBody, _ := c.Get(KeyRequestBody)
-	if requestBody != nil {
-		return requestBody.([]byte), nil
+var ErrRequestBodyTooLarge = errors.New("request body too large")
+
+func IsRequestBodyTooLargeError(err error) bool {
+	if err == nil {
+		return false
 	}
-	requestBody, err := io.ReadAll(c.Request.Body)
+	if errors.Is(err, ErrRequestBodyTooLarge) {
+		return true
+	}
+	var mbe *http.MaxBytesError
+	return errors.As(err, &mbe)
+}
+
+func GetRequestBody(c *gin.Context) ([]byte, error) {
+	cached, exists := c.Get(KeyRequestBody)
+	if exists && cached != nil {
+		if b, ok := cached.([]byte); ok {
+			return b, nil
+		}
+	}
+	maxMB := constant.MaxRequestBodyMB
+	if maxMB <= 0 {
+		maxMB = 32
+	}
+	maxBytes := int64(maxMB) << 20
+
+	limited := io.LimitReader(c.Request.Body, maxBytes+1)
+	body, err := io.ReadAll(limited)
 	if err != nil {
+		_ = c.Request.Body.Close()
+		if IsRequestBodyTooLargeError(err) {
+			return nil, ErrRequestBodyTooLarge
+		}
 		return nil, err
 	}
 	_ = c.Request.Body.Close()
-	c.Set(KeyRequestBody, requestBody)
-	return requestBody.([]byte), nil
+	if int64(len(body)) > maxBytes {
+		return nil, ErrRequestBodyTooLarge
+	}
+	c.Set(KeyRequestBody, body)
+	return body, nil
 }
 
 func UnmarshalBodyReusable(c *gin.Context, v any) error {
@@ -128,13 +159,13 @@ func ParseMultipartFormReusable(c *gin.Context) (*multipart.Form, error) {
 	}
 
 	contentType := c.Request.Header.Get("Content-Type")
-	boundary := ""
-	if idx := strings.Index(contentType, "boundary="); idx != -1 {
-		boundary = contentType[idx+9:]
+	boundary, err := parseBoundary(contentType)
+	if err != nil {
+		return nil, err
 	}
 
 	reader := multipart.NewReader(bytes.NewReader(requestBody), boundary)
-	form, err := reader.ReadForm(32 << 20) // 32 MB max memory
+	form, err := reader.ReadForm(multipartMemoryLimit())
 	if err != nil {
 		return nil, err
 	}
@@ -177,17 +208,16 @@ func parseFormData(data []byte, v any) error {
 
 func parseMultipartFormData(c *gin.Context, data []byte, v any) error {
 	contentType := c.Request.Header.Get("Content-Type")
-	boundary := ""
-	if idx := strings.Index(contentType, "boundary="); idx != -1 {
-		boundary = contentType[idx+9:]
-	}
-
-	if boundary == "" {
-		return Unmarshal(data, v) // Fallback to JSON
+	boundary, err := parseBoundary(contentType)
+	if err != nil {
+		if errors.Is(err, errBoundaryNotFound) {
+			return Unmarshal(data, v) // Fallback to JSON
+		}
+		return err
 	}
 
 	reader := multipart.NewReader(bytes.NewReader(data), boundary)
-	form, err := reader.ReadForm(32 << 20) // 32 MB max memory
+	form, err := reader.ReadForm(multipartMemoryLimit())
 	if err != nil {
 		return err
 	}
@@ -202,4 +232,32 @@ func parseMultipartFormData(c *gin.Context, data []byte, v any) error {
 	}
 
 	return processFormMap(formMap, v)
+}
+
+var errBoundaryNotFound = errors.New("multipart boundary not found")
+
+// parseBoundary extracts the multipart boundary from the Content-Type header using mime.ParseMediaType
+func parseBoundary(contentType string) (string, error) {
+	if contentType == "" {
+		return "", errBoundaryNotFound
+	}
+	// Boundary-UUID / boundary-------xxxxxx
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return "", err
+	}
+	boundary, ok := params["boundary"]
+	if !ok || boundary == "" {
+		return "", errBoundaryNotFound
+	}
+	return boundary, nil
+}
+
+// multipartMemoryLimit returns the configured multipart memory limit in bytes
+func multipartMemoryLimit() int64 {
+	limitMB := constant.MaxFileDownloadMB
+	if limitMB <= 0 {
+		limitMB = 32
+	}
+	return int64(limitMB) << 20
 }
