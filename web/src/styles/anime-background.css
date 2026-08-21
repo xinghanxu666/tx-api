@@ -124,3 +124,13 @@ body[data-anime-bg] [data-slot='select-content'] {
 .dark body[data-anime-bg] [data-slot='select-content'] {
   background-color: rgb(34 34 36 / 92%);
 }
+
+/* When a modal opens, frost the whole page behind it so the popup content
+ * pops. The overlay spans the viewport while its dialog is open, so blurring
+ * the overlay blurs everything underneath. */
+body[data-anime-bg] [data-slot='dialog-overlay'],
+body[data-anime-bg] [data-slot='alert-dialog-overlay'],
+body[data-anime-bg] [data-slot='sheet-overlay'] {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
