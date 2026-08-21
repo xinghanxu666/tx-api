@@ -61,13 +61,13 @@ For commercial licensing, please contact support@quantumnous.com
 .anime-background-scrim {
   position: absolute;
   inset: 0;
-  background: rgb(255 255 255 / 18%);
+  background: rgb(255 255 255 / 8%);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
 
 .dark .anime-background-scrim {
-  background: rgb(128 128 128 / 20%);
+  background: rgb(128 128 128 / 10%);
 }
 
 /* ---------------------------------------------------------------------------
@@ -80,19 +80,21 @@ For commercial licensing, please contact support@quantumnous.com
  * opaque so dense text like system announcements remains readable, while the
  * page canvas, cards and sidebar stay clearly see-through.
  * ------------------------------------------------------------------------- */
-/* Alphas must stay LOW because they compound: canvas × card × scrim multiply
- * together over the photo (e.g. 0.45 × 0.6 × 0.82 ≈ 22% image visibility
- * under a card). Readability comes from the backdrop blurs, not fill. */
+/* Alphas compound multiplicatively through the console stack (body canvas ×
+ * content inset × card × scrim), so they stay deliberately low to guarantee
+ * ≥50% wallpaper visibility under a card: e.g. light theme 0.75 × 0.85 ×
+ * 0.92 ≈ 59% direct areas, ≈44–52% under cards depending on inset variant.
+ * Readability comes from the stacked backdrop blurs, not from fill. */
 body[data-anime-bg] {
-  --background: rgb(255 255 255 / 40%);
-  --card: rgb(255 255 255 / 55%);
-  --sidebar: rgb(255 255 255 / 46%);
+  --background: rgb(255 255 255 / 15%);
+  --card: rgb(255 255 255 / 25%);
+  --sidebar: rgb(255 255 255 / 20%);
 }
 
 .dark body[data-anime-bg] {
-  --background: rgb(18 18 20 / 38%);
-  --card: rgb(30 30 32 / 56%);
-  --sidebar: rgb(24 24 26 / 46%);
+  --background: rgb(18 18 20 / 14%);
+  --card: rgb(30 30 32 / 26%);
+  --sidebar: rgb(24 24 26 / 20%);
 }
 
 body[data-anime-bg] [data-slot='card'],
