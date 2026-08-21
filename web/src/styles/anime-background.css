@@ -1,0 +1,82 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
+/* Anime wallpaper layer, rendered by <AnimeBackground /> on every route
+ * except home. The <img> fades in once loaded; the scrim keeps a hint of the
+ * theme surface color over the photo so foreground text stays readable. */
+.anime-background-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -10;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 500ms ease;
+}
+
+.anime-background-layer.anime-background-layer-visible {
+  opacity: 1;
+}
+
+.anime-background-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+
+.anime-background-scrim {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--background) 32%, transparent);
+}
+
+/* ---------------------------------------------------------------------------
+ * Frosted-glass mode.
+ *
+ * `data-anime-bg` is set on <body> while the wallpaper is visible. Redefining
+ * the surface tokens with alpha here turns every `bg-background` /
+ * `bg-card` / `bg-sidebar` consumer translucent at once; the blur rules below
+ * complete the frosted effect. Floating overlays keep a higher fill ratio so
+ * their content remains readable over busy artwork.
+ * ------------------------------------------------------------------------- */
+body[data-anime-bg] {
+  --background: color-mix(in srgb, var(--background) 55%, transparent);
+  --card: color-mix(in srgb, var(--card) 75%, transparent);
+  --sidebar: color-mix(in srgb, var(--sidebar) 70%, transparent);
+}
+
+body[data-anime-bg] [data-slot='card'],
+body[data-anime-bg] [data-slot='sidebar-inset'],
+body[data-anime-bg] [data-slot='sidebar-inner'],
+body[data-anime-bg] [data-slot='sidebar'] {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+body[data-anime-bg] [data-slot='dialog-content'],
+body[data-anime-bg] [data-slot='alert-dialog-content'],
+body[data-anime-bg] [data-slot='sheet-content'],
+body[data-anime-bg] [data-slot='popover-content'],
+body[data-anime-bg] [data-slot='dropdown-menu-content'],
+body[data-anime-bg] [data-slot='select-content'] {
+  background-color: color-mix(in srgb, var(--background) 88%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
