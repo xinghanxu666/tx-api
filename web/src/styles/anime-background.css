@@ -107,21 +107,40 @@ body[data-anime-bg] [data-slot='sidebar'] {
 
 body[data-anime-bg] [data-slot='dialog-content'],
 body[data-anime-bg] [data-slot='alert-dialog-content'],
-body[data-anime-bg] [data-slot='sheet-content'],
+body[data-anime-bg] [data-slot='sheet-content'] {
+  background-color: rgb(255 255 255 / 30%);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
 body[data-anime-bg] [data-slot='popover-content'],
 body[data-anime-bg] [data-slot='dropdown-menu-content'],
 body[data-anime-bg] [data-slot='select-content'] {
-  background-color: rgb(255 255 255 / 92%);
+  background-color: rgb(255 255 255 / 30%);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
 }
 
 .dark body[data-anime-bg] [data-slot='dialog-content'],
 .dark body[data-anime-bg] [data-slot='alert-dialog-content'],
-.dark body[data-anime-bg] [data-slot='sheet-content'],
+.dark body[data-anime-bg] [data-slot='sheet-content'] {
+  background-color: rgb(34 34 36 / 32%);
+}
+
 .dark body[data-anime-bg] [data-slot='popover-content'],
 .dark body[data-anime-bg] [data-slot='dropdown-menu-content'],
 .dark body[data-anime-bg] [data-slot='select-content'] {
+  background-color: rgb(34 34 36 / 32%);
+}
+
+/* Dense text like the system announcements keeps a near-solid fill; every
+ * other floating panel stays translucent because the blurred wallpaper
+ * already provides contrast. */
+body[data-anime-bg] .anime-bg-solid {
+  background-color: rgb(255 255 255 / 92%);
+}
+
+.dark body[data-anime-bg] .anime-bg-solid {
   background-color: rgb(34 34 36 / 92%);
 }
 

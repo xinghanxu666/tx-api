@@ -328,7 +328,7 @@ export function NotificationPopover({
       <PopoverContent
         align='end'
         sideOffset={8}
-        className='w-[min(26rem,calc(100vw-1rem))] gap-3 p-3'
+        className='anime-bg-solid w-[min(26rem,calc(100vw-1rem))] gap-3 p-3'
       >
         <PopoverHeader className='gap-1 px-1'>
           <PopoverTitle>{t('System Announcements')}</PopoverTitle>
