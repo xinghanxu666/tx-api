@@ -56,17 +56,18 @@ For commercial licensing, please contact support@quantumnous.com
 
 /* Scrim keeps foreground text readable: white over the light wallpaper,
  * gray over the dark one (theme class lives on <html>). The backdrop blur
- * gives it a frosted-matte texture that sits directly on the photo. */
+ * gives it a frosted-matte texture that sits directly on the photo. Keep it
+ * light — it stacks with every translucent panel above it. */
 .anime-background-scrim {
   position: absolute;
   inset: 0;
-  background: rgb(255 255 255 / 40%);
+  background: rgb(255 255 255 / 18%);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
 
 .dark .anime-background-scrim {
-  background: rgb(128 128 128 / 40%);
+  background: rgb(128 128 128 / 20%);
 }
 
 /* ---------------------------------------------------------------------------
@@ -79,16 +80,19 @@ For commercial licensing, please contact support@quantumnous.com
  * opaque so dense text like system announcements remains readable, while the
  * page canvas, cards and sidebar stay clearly see-through.
  * ------------------------------------------------------------------------- */
+/* Alphas must stay LOW because they compound: canvas × card × scrim multiply
+ * together over the photo (e.g. 0.45 × 0.6 × 0.82 ≈ 22% image visibility
+ * under a card). Readability comes from the backdrop blurs, not fill. */
 body[data-anime-bg] {
-  --background: rgb(255 255 255 / 60%);
-  --card: rgb(255 255 255 / 78%);
-  --sidebar: rgb(255 255 255 / 72%);
+  --background: rgb(255 255 255 / 40%);
+  --card: rgb(255 255 255 / 55%);
+  --sidebar: rgb(255 255 255 / 46%);
 }
 
 .dark body[data-anime-bg] {
-  --background: rgb(18 18 20 / 58%);
-  --card: rgb(30 30 32 / 76%);
-  --sidebar: rgb(24 24 26 / 70%);
+  --background: rgb(18 18 20 / 38%);
+  --card: rgb(30 30 32 / 56%);
+  --sidebar: rgb(24 24 26 / 46%);
 }
 
 body[data-anime-bg] [data-slot='card'],
