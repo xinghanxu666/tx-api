@@ -19,9 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 import { z } from 'zod'
 
 import {
+  CLAUDE_FIELD_PASSTHROUGH_TYPES,
+  CHANNEL_TYPE_NEW_API,
   CHANNEL_STATUS,
   ERROR_MESSAGES,
+  FIELD_PASSTHROUGH_TYPES,
   MODEL_FETCHABLE_TYPES,
+  OPENAI_FIELD_PASSTHROUGH_TYPES,
 } from '../constants'
 import type { Channel } from '../types'
 import {
@@ -36,6 +40,69 @@ import {
 // ============================================================================
 // Form Validation Schema
 // ============================================================================
+
+const SUPPORTED_PROXY_PROTOCOLS = new Set([
+  'http:',
+  'https:',
+  'socks5:',
+  'socks5h:',
+])
+
+function isOptionalProxyURL(value: string | undefined): boolean {
+  const trimmedValue = value?.trim() || ''
+  if (!trimmedValue) return true
+
+  const schemeSeparatorIndex = trimmedValue.indexOf('://')
+  if (schemeSeparatorIndex <= 0) return false
+
+  const authorityAndSuffix = trimmedValue.slice(schemeSeparatorIndex + 3)
+  const suffixIndex = authorityAndSuffix.search(/[/?#]/)
+  if (suffixIndex >= 0 && authorityAndSuffix.slice(suffixIndex) !== '/') {
+    return false
+  }
+
+  try {
+    const parsedURL = new URL(trimmedValue)
+    return (
+      SUPPORTED_PROXY_PROTOCOLS.has(parsedURL.protocol) &&
+      Boolean(parsedURL.hostname) &&
+      parsedURL.port !== '0'
+    )
+  } catch {
+    return false
+  }
+}
+
+export const HTTP_PROTOCOL_AUTO = 'auto'
+export const HTTP_PROTOCOL_HTTP1 = 'http1'
+export const MAX_HTTP2_CONNECTION_SHARDS = 8
+
+export function normalizeHttpProtocol(
+  value: string | undefined | null
+): 'auto' | 'http1' {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+  if (normalized === HTTP_PROTOCOL_HTTP1) {
+    return HTTP_PROTOCOL_HTTP1
+  }
+  return HTTP_PROTOCOL_AUTO
+}
+
+export function normalizeHttp2ConnectionShards(
+  value: number | undefined | null
+): number {
+  if (value == null || Number.isNaN(value) || value === 0) {
+    return 1
+  }
+  if (value < 1) {
+    return 1
+  }
+  if (value > MAX_HTTP2_CONNECTION_SHARDS) {
+    return MAX_HTTP2_CONNECTION_SHARDS
+  }
+  return value
+}
 
 function parseOptionalJson(value: string | undefined): unknown {
   if (!value?.trim()) return undefined
@@ -188,7 +255,12 @@ export const channelFormSchema = z
     // Channel extra settings (stored in setting JSON, not sent directly)
     force_format: z.boolean().optional(),
     thinking_to_content: z.boolean().optional(),
-    proxy: z.string().optional(),
+    proxy: z
+      .string()
+      .optional()
+      .refine(isOptionalProxyURL, ERROR_MESSAGES.INVALID_PROXY),
+    http_protocol: z.enum(['auto', 'http1']).optional(),
+    http2_connection_shards: z.number().int().optional(),
     pass_through_body_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
@@ -212,7 +284,10 @@ export const channelFormSchema = z
     upstream_model_update_ignored_models: z.string().optional(),
   })
   .superRefine((data, ctx) => {
-    if ([3, 8, 36, 45].includes(data.type) && !data.base_url?.trim()) {
+    if (
+      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API].includes(data.type) &&
+      !data.base_url?.trim()
+    ) {
       addRequiredIssue(
         ctx,
         'base_url',
@@ -301,6 +376,23 @@ export const channelFormSchema = z
         'Vertex AI API Key mode does not support batch creation'
       )
     }
+
+    const protocol = normalizeHttpProtocol(data.http_protocol)
+    const shards = data.http2_connection_shards ?? 1
+    if (shards < 1 || shards > MAX_HTTP2_CONNECTION_SHARDS) {
+      addRequiredIssue(
+        ctx,
+        'http2_connection_shards',
+        ERROR_MESSAGES.INVALID_HTTP2_CONNECTION_SHARDS
+      )
+    }
+    if (protocol === HTTP_PROTOCOL_HTTP1 && shards > 1) {
+      addRequiredIssue(
+        ctx,
+        'http2_connection_shards',
+        ERROR_MESSAGES.INVALID_HTTP1_WITH_SHARDS
+      )
+    }
   })
 
 export type ChannelFormValues = z.infer<typeof channelFormSchema>
@@ -339,6 +431,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   force_format: false,
   thinking_to_content: false,
   proxy: '',
+  http_protocol: HTTP_PROTOCOL_AUTO,
+  http2_connection_shards: 1,
   pass_through_body_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
@@ -377,6 +471,8 @@ export function transformChannelToFormDefaults(
     force_format: false,
     thinking_to_content: false,
     proxy: '',
+    http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
+    http2_connection_shards: 1,
     pass_through_body_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
@@ -385,10 +481,16 @@ export function transformChannelToFormDefaults(
   if (channel.setting) {
     try {
       const parsed = JSON.parse(channel.setting)
+      const protocol = normalizeHttpProtocol(parsed.http_protocol)
+      const shards = normalizeHttp2ConnectionShards(
+        parsed.http2_connection_shards
+      )
       extraSettings = {
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
+        http_protocol: protocol,
+        http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
@@ -501,15 +603,29 @@ export function transformChannelToFormDefaults(
 /**
  * Build the setting JSON string from form extra settings
  */
-function buildSettingJSON(formData: ChannelFormValues): string {
-  const settingObj = {
+export function buildSettingJSON(formData: ChannelFormValues): string {
+  const settingObj: Record<string, unknown> = {
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
-    proxy: formData.proxy || '',
+    proxy: formData.proxy?.trim() || '',
     pass_through_body_enabled: formData.pass_through_body_enabled || false,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
   }
+
+  const protocol = normalizeHttpProtocol(formData.http_protocol)
+  const shards =
+    protocol === HTTP_PROTOCOL_HTTP1
+      ? 1
+      : normalizeHttp2ConnectionShards(formData.http2_connection_shards)
+
+  // Omit defaults so unchanged channels keep equivalent JSON.
+  if (protocol === HTTP_PROTOCOL_HTTP1) {
+    settingObj.http_protocol = HTTP_PROTOCOL_HTTP1
+  } else if (shards > 1) {
+    settingObj.http2_connection_shards = shards
+  }
+
   return JSON.stringify(settingObj)
 }
 
@@ -558,21 +674,21 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   }
 
   // Field passthrough controls:
-  // - OpenAI (type 1) and Anthropic (type 14): allow_service_tier
-  // - OpenAI only: disable_store, allow_safety_identifier
-  if (formData.type === 1 || formData.type === 14 || formData.type === 57) {
+  // - OpenAI, Anthropic, Codex, and New API: allow_service_tier
+  // - OpenAI request fields: OpenAI, Codex, and New API
+  // - Claude request fields: Anthropic and New API
+  if (FIELD_PASSTHROUGH_TYPES.has(formData.type)) {
     settingsObj.allow_service_tier = formData.allow_service_tier === true
   } else if ('allow_service_tier' in settingsObj) {
     delete settingsObj.allow_service_tier
   }
 
-  if (formData.type === 1 || formData.type === 57) {
+  if (OPENAI_FIELD_PASSTHROUGH_TYPES.has(formData.type)) {
     settingsObj.disable_store = formData.disable_store === true
     settingsObj.allow_safety_identifier =
       formData.allow_safety_identifier === true
     settingsObj.allow_include_obfuscation =
       formData.allow_include_obfuscation === true
-    settingsObj.allow_inference_geo = formData.allow_inference_geo === true
   } else {
     if ('disable_store' in settingsObj) {
       delete settingsObj.disable_store
@@ -583,23 +699,28 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     if ('allow_include_obfuscation' in settingsObj) {
       delete settingsObj.allow_include_obfuscation
     }
-    if (formData.type !== 14 && 'allow_inference_geo' in settingsObj) {
-      delete settingsObj.allow_inference_geo
-    }
   }
 
-  // Anthropic (type 14): claude_beta_query, allow_inference_geo, allow_speed
-  if (formData.type === 14) {
+  if (
+    OPENAI_FIELD_PASSTHROUGH_TYPES.has(formData.type) ||
+    CLAUDE_FIELD_PASSTHROUGH_TYPES.has(formData.type)
+  ) {
     settingsObj.allow_inference_geo = formData.allow_inference_geo === true
+  } else if ('allow_inference_geo' in settingsObj) {
+    delete settingsObj.allow_inference_geo
+  }
+
+  if (CLAUDE_FIELD_PASSTHROUGH_TYPES.has(formData.type)) {
     settingsObj.allow_speed = formData.allow_speed === true
+  } else if ('allow_speed' in settingsObj) {
+    delete settingsObj.allow_speed
+  }
+
+  // Only the Anthropic adaptor supports forcing the Claude beta query.
+  if (formData.type === 14) {
     settingsObj.claude_beta_query = formData.claude_beta_query === true
-  } else {
-    if ('allow_speed' in settingsObj) {
-      delete settingsObj.allow_speed
-    }
-    if ('claude_beta_query' in settingsObj) {
-      delete settingsObj.claude_beta_query
-    }
+  } else if ('claude_beta_query' in settingsObj) {
+    delete settingsObj.claude_beta_query
   }
 
   settingsObj.disable_task_polling_sleep =
