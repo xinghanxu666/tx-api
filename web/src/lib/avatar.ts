@@ -43,3 +43,13 @@ export function getUserAvatarStyle(name: string): UserAvatarStyle {
 export function getUserAvatarFallback(name: string): string {
   return name.trim().charAt(0).toUpperCase() || '?'
 }
+
+/**
+ * Returns the GitHub avatar URL when the user has bound a GitHub account
+ * (non-empty `github_id`), otherwise null so callers fall back to the
+ * deterministic initials avatar.
+ */
+export function getUserAvatarSrc(githubId?: string | null): string | null {
+  if (!githubId) return null
+  return `https://avatars.githubusercontent.com/u/${githubId}?v=4`
+}
