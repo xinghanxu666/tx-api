@@ -44,14 +44,15 @@ const mockUseTheme = vi.mocked(useTheme)
 let currentPathname = '/'
 let currentResolvedTheme: 'dark' | 'light' = 'dark'
 
+// The double fabricates only the state slice the component reads, so its
+// implementation is asserted to the hook's type instead of re-declaring
+// TanStack Router's generic router-state types, which `select` types exactly.
 function installRouterState() {
   mockUseRouterState.mockImplementation(
-    (
-      options?: { select?: (state: unknown) => unknown } | undefined
-    ) => {
+    ((options?: { select?: (state: unknown) => unknown }) => {
       const state = { location: { pathname: currentPathname } }
       return options?.select ? options.select(state) : state
-    }
+    }) as unknown as typeof useRouterState
   )
 }
 
