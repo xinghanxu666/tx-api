@@ -24,7 +24,10 @@ import {
 } from '@tanstack/react-table'
 import { render, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { usageLogSchema, type UsageLog } from '../../data/schema'
 import { useCommonLogsColumns } from '../columns/common-logs-columns'
@@ -84,6 +87,11 @@ function Fixture(props: {
 }
 
 function renderLogs(props: Parameters<typeof Fixture>[0] = {}) {
+  useAuthStore.getState().auth.setUser({
+    id: 1,
+    username: 'tester',
+    role: (props.admin ?? true) ? ROLE.ADMIN : ROLE.USER,
+  })
   return render(
     <QueryClientProvider
       client={
@@ -96,6 +104,10 @@ function renderLogs(props: Parameters<typeof Fixture>[0] = {}) {
     </QueryClientProvider>
   )
 }
+
+afterEach(() => {
+  useAuthStore.setState(useAuthStore.getInitialState(), true)
+})
 
 it('shows model mismatch evidence when tapping the mobile model badge', async () => {
   const user = userEvent.setup()
@@ -124,6 +136,37 @@ it('shows model mismatch evidence when tapping the mobile model badge', async ()
   ).toBeVisible()
   expect(within(dialog).getByText('mapped-model')).toBeVisible()
   expect(within(dialog).getByText('unexpected-model')).toBeVisible()
+})
+
+it('hides the upstream request and response models for non-admin users', async () => {
+  const user = userEvent.setup()
+  renderLogs({
+    admin: false,
+    logs: [
+      {
+        ...log,
+        other: JSON.stringify({
+          is_model_mapped: true,
+          upstream_model_name: 'provider-mapped-model',
+          response_model: {
+            requested_model: longName,
+            upstream_model: 'mapped-model',
+            returned_model: 'unexpected-model',
+          },
+        }),
+      },
+    ],
+  })
+  expect(
+    screen.getByRole('button', { name: `Model: ${longName}` })
+  ).toBeVisible()
+  await user.click(screen.getByRole('button', { name: `Model: ${longName}` }))
+  const dialog = await screen.findByRole('dialog', { name: 'Model' })
+  expect(within(dialog).getByText(longName)).toBeVisible()
+  expect(within(dialog).queryByText('Upstream Model')).not.toBeInTheDocument()
+  expect(within(dialog).queryByText('Response Model')).not.toBeInTheDocument()
+  expect(within(dialog).queryByText('mapped-model')).not.toBeInTheDocument()
+  expect(within(dialog).queryByText('unexpected-model')).not.toBeInTheDocument()
 })
 
 it('opens long channel text on tap and copies the complete value', async () => {

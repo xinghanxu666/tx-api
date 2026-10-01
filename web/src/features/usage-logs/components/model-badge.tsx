@@ -39,6 +39,8 @@ interface ModelBadgeProps {
   modelName: string
   actualModel?: string
   responseModel?: LogOtherData['response_model']
+  /** Upstream request and response models are administrator-only details. */
+  isAdmin?: boolean
   className?: string
   wrapText?: boolean
   onInspect?: () => void
@@ -55,7 +57,7 @@ function ModelBadgeContent(props: ModelBadgeProps & { copyable: boolean }) {
       showDot={!provider?.icon}
       autoColor={provider?.icon ? undefined : props.modelName}
       className={cn(
-        'border-border/60 bg-muted/30 h-6 max-w-none gap-1.5 rounded-md border px-2 [font-family:var(--font-body)]',
+        'border-border/60 bg-muted h-6 max-w-none gap-1.5 rounded-md border px-2 [font-family:var(--font-body)]',
         provider?.icon && 'text-foreground',
         props.wrapText && 'h-auto min-h-6 max-w-full py-px whitespace-normal',
         props.className
@@ -92,25 +94,22 @@ function ModelBadgeContent(props: ModelBadgeProps & { copyable: boolean }) {
 
 export function ModelBadge(props: ModelBadgeProps) {
   const { t } = useTranslation()
-  const mismatch = isResponseModelMismatch(props.responseModel)
+  const responseModel = props.isAdmin ? props.responseModel : undefined
+  const mismatch = isResponseModelMismatch(responseModel)
   const responseModelLabel =
-    mismatch && props.responseModel
+    mismatch && responseModel
       ? t('Response model: {{model}}', {
-          model: props.responseModel.returned_model,
+          model: responseModel.returned_model,
         })
       : ''
   const modelLabel = `${t('Model')}: ${props.modelName}${responseModelLabel ? `, ${responseModelLabel}` : ''}`
-  const hasDetails =
-    !!props.actualModel ||
-    !!(
-      props.responseModel &&
-      (mismatch ||
-        props.responseModel.returned_model !==
-          props.responseModel.requested_model ||
-        (props.responseModel.upstream_model &&
-          props.responseModel.upstream_model !==
-            props.responseModel.requested_model))
-    )
+  const hasResponseDetails =
+    !!responseModel &&
+    (mismatch ||
+      responseModel.returned_model !== responseModel.requested_model ||
+      (responseModel.upstream_model &&
+        responseModel.upstream_model !== responseModel.requested_model))
+  const hasDetails = !!props.actualModel || hasResponseDetails
 
   if (!hasDetails) {
     if (props.onInspect) {
@@ -177,8 +176,8 @@ export function ModelBadge(props: ModelBadgeProps) {
         {content}
       </PopoverTrigger>
       <PopoverContent className='w-96 max-w-[calc(100vw-2rem)]'>
-        {props.responseModel ? (
-          <ResponseModelDetails observation={props.responseModel} />
+        {responseModel ? (
+          <ResponseModelDetails observation={responseModel} isAdmin />
         ) : (
           <div className='space-y-2'>
             <div className='flex items-start justify-between gap-3'>
@@ -206,9 +205,12 @@ export function ModelBadge(props: ModelBadgeProps) {
 
 export function ResponseModelDetails(props: {
   observation: NonNullable<LogOtherData['response_model']>
+  /** Upstream request and response models are administrator-only details. */
+  isAdmin?: boolean
 }) {
   const { t } = useTranslation()
-  const mismatch = isResponseModelMismatch(props.observation)
+  const mismatch =
+    props.isAdmin === true && isResponseModelMismatch(props.observation)
 
   return (
     <div className='min-w-0 space-y-2'>
@@ -228,18 +230,23 @@ export function ResponseModelDetails(props: {
         value={props.observation.requested_model}
         mono
       />
-      <DetailRow
-        label={t('Upstream Model')}
-        value={
-          props.observation.upstream_model || props.observation.requested_model
-        }
-        mono
-      />
-      <DetailRow
-        label={t('Response Model')}
-        value={props.observation.returned_model}
-        mono
-      />
+      {props.isAdmin === true && (
+        <>
+          <DetailRow
+            label={t('Upstream Model')}
+            value={
+              props.observation.upstream_model ||
+              props.observation.requested_model
+            }
+            mono
+          />
+          <DetailRow
+            label={t('Response Model')}
+            value={props.observation.returned_model}
+            mono
+          />
+        </>
+      )}
       {mismatch && (
         <p className='text-muted-foreground text-xs'>
           {t(

@@ -321,6 +321,7 @@ it('opens the mismatch evidence with the keyboard and shows all three models', a
   render(
     <ModelBadge
       modelName='requested-model'
+      isAdmin
       responseModel={{
         requested_model: 'requested-model',
         upstream_model: 'mapped-model',
@@ -378,6 +379,7 @@ it('keeps mapped model details available when the response matches the upstream 
   render(
     <ModelBadge
       modelName='requested-model'
+      isAdmin
       responseModel={{
         requested_model: 'requested-model',
         upstream_model: 'mapped-model',
@@ -406,6 +408,7 @@ it.each([
     render(
       <ModelBadge
         modelName='requested-model'
+        isAdmin
         responseModel={{
           requested_model: 'requested-model',
           upstream_model: 'mapped-model',
@@ -427,3 +430,60 @@ it.each([
     ).not.toBeInTheDocument()
   }
 )
+
+it('hides the upstream request and response models from non-admin users', async () => {
+  const user = userEvent.setup()
+  const returned = 'unexpected-provider-model-2026-09-17'
+  const { container } = render(
+    <ModelBadge
+      modelName='requested-model'
+      responseModel={{
+        requested_model: 'requested-model',
+        upstream_model: 'mapped-model',
+        returned_model: returned,
+      }}
+    />
+  )
+  expect(screen.getByText('requested-model')).toBeVisible()
+  expect(screen.queryByText(returned)).not.toBeInTheDocument()
+  expect(screen.queryByText('mapped-model')).not.toBeInTheDocument()
+  expect(screen.queryByText(/^Response model:/)).not.toBeInTheDocument()
+  expect(screen.queryByRole('button')).not.toBeInTheDocument()
+
+  await user.click(screen.getByText('requested-model'))
+  expect(screen.queryByText('Upstream Model')).not.toBeInTheDocument()
+  expect(screen.queryByText('Response Model')).not.toBeInTheDocument()
+  expect(container.querySelector('[data-slot="status-badge"]')).not.toBeNull()
+})
+
+it('fills the model badge opaquely so the model name cannot blend with overlapping cell content', () => {
+  const { container } = render(<ModelBadge modelName='requested-model' />)
+  const badge = container.querySelector('[data-slot="status-badge"]')
+  expect(badge).toHaveClass('bg-muted')
+  expect(badge).not.toHaveClass('bg-muted/30')
+})
+
+it('keeps only the requested model in the details for non-admin users', async () => {
+  const user = userEvent.setup()
+  render(
+    <ModelBadge
+      modelName='requested-model'
+      actualModel='mapped-model'
+      responseModel={{
+        requested_model: 'requested-model',
+        upstream_model: 'mapped-model',
+        returned_model: 'unexpected-provider-model-2026-09-17',
+      }}
+    />
+  )
+  await user.click(
+    screen.getByRole('button', { name: 'Model: requested-model' })
+  )
+  expect(await screen.findByText('Actual Model:')).toBeVisible()
+  expect(screen.getByText('Request Model:')).toBeVisible()
+  expect(screen.queryByText('Upstream Model')).not.toBeInTheDocument()
+  expect(screen.queryByText('Response Model')).not.toBeInTheDocument()
+  expect(
+    screen.queryByText('unexpected-provider-model-2026-09-17')
+  ).not.toBeInTheDocument()
+})
