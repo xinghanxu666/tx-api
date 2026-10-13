@@ -788,17 +788,25 @@ func TestTaskPluginEndpointUsesOneCanonicalModelForDuplicateJSONKeys(t *testing.
 func TestRequestBodyFailuresReportTheirCause(t *testing.T) {
 	require.NoError(t, appI18n.Init())
 	require.NotNil(t, jsplugin.DefaultRegistry.Generation(), "the built-in plugins keep a routing generation, as in production")
+	_, err := jsplugin.DefaultRegistry.Register(genericTaskPluginSource, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister("generic-entry-test") })
+	routePlugin := compileTaskRoutePlugin(t, genericTaskPluginSource)
 	previous := constant.MaxRequestBodyMB
 	constant.MaxRequestBodyMB = 1
 	t.Cleanup(func() { constant.MaxRequestBodyMB = previous })
 
+	reached := func(c *gin.Context) { c.Status(http.StatusNoContent) }
 	router := gin.New()
-	router.POST("/v1/responses", PinTaskPluginEndpoint(), PrepareTaskPluginEndpoint(), Distribute(), func(c *gin.Context) {
-		c.Status(http.StatusNoContent)
-	})
-	router.POST("/v1/chat/completions", Distribute(), func(c *gin.Context) {
-		c.Status(http.StatusNoContent)
-	})
+	router.POST("/v1/responses", PinTaskPluginEndpoint(), PrepareTaskPluginEndpoint(), Distribute(), reached)
+	router.POST("/v1/video/generations", PinTaskPluginEndpoint(), PrepareTaskPluginEndpoint(), Distribute(), reached)
+	router.POST("/v1/chat/completions", Distribute(), reached)
+	router.POST("/mj/submit/imagine", Distribute(), reached)
+	router.POST("/v1/tasks/:key", PrepareTaskPluginSubmit(), reached)
+	router.POST("/vendor/jobs", func(c *gin.Context) {
+		c.Set(jsplugin.ContextKeyPinnedRoute, jsplugin.PinnedRoute{Plugin: routePlugin})
+	}, PrepareTaskPluginRoute(), reached)
+	oversized := `{"model":"gpt-x","prompt":"` + strings.Repeat("a", 1<<20) + `"}`
 	tests := []struct {
 		name    string
 		path    string
@@ -809,7 +817,7 @@ func TestRequestBodyFailuresReportTheirCause(t *testing.T) {
 		{
 			name:    "oversized body on a plugin protocol path",
 			path:    "/v1/responses",
-			body:    strings.NewReader(`{"model":"gpt-x","input":"` + strings.Repeat("a", 1<<20) + `"}`),
+			body:    strings.NewReader(oversized),
 			status:  http.StatusRequestEntityTooLarge,
 			message: "Invalid request: request body exceeds 1 MB: request body too large",
 		},
@@ -819,6 +827,35 @@ func TestRequestBodyFailuresReportTheirCause(t *testing.T) {
 			body:    io.MultiReader(strings.NewReader(`{"model":"gpt-x","input":"`), iotest.ErrReader(io.ErrUnexpectedEOF)),
 			status:  http.StatusBadRequest,
 			message: "Invalid request: unexpected EOF",
+		},
+		{
+			// The endpoint check lets this path through and the distributor reads the body again.
+			name:    "oversized body on the legacy video path",
+			path:    "/v1/video/generations",
+			body:    strings.NewReader(oversized),
+			status:  http.StatusRequestEntityTooLarge,
+			message: "Invalid request: request body exceeds 1 MB: request body too large",
+		},
+		{
+			name:    "oversized Midjourney body",
+			path:    "/mj/submit/imagine",
+			body:    strings.NewReader(oversized),
+			status:  http.StatusRequestEntityTooLarge,
+			message: "Invalid request: request body exceeds 1 MB: request body too large",
+		},
+		{
+			name:    "oversized task plugin submission",
+			path:    "/v1/tasks/generic-entry-test",
+			body:    strings.NewReader(oversized),
+			status:  http.StatusRequestEntityTooLarge,
+			message: "request body exceeds 1 MB: request body too large",
+		},
+		{
+			name:    "oversized plugin route body",
+			path:    "/vendor/jobs",
+			body:    strings.NewReader(oversized),
+			status:  http.StatusRequestEntityTooLarge,
+			message: "request body exceeds 1 MB: request body too large",
 		},
 		{
 			name:    "invalid JSON on an ordinary path",
@@ -837,7 +874,7 @@ func TestRequestBodyFailuresReportTheirCause(t *testing.T) {
 			router.ServeHTTP(recorder, request)
 
 			assert.Equal(t, testCase.status, recorder.Code)
-			assert.Contains(t, recorder.Body.String(), `"message":"`+testCase.message+` (request id:`)
+			assert.Contains(t, recorder.Body.String(), `"message":"`+testCase.message)
 		})
 	}
 }
