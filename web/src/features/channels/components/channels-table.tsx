@@ -506,6 +506,7 @@ export function ChannelsTable() {
         createPortal(
           <ChannelPriorityModeToggle
             active={reorderActive}
+            viewMode={viewMode}
             reason={dragReason}
             onChange={() => setReorderEnabled((value) => !value)}
           />,

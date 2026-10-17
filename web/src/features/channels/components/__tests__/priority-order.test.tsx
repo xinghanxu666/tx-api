@@ -37,6 +37,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { CHANNEL_PRIORITY_GUIDE_KEYS } from '../../constants'
 import type {
   PriorityMove,
   PriorityOrder,
@@ -111,6 +112,9 @@ beforeEach(() => {
   requests = []
   failSave = false
   localStorage.clear()
+  for (const key of Object.values(CHANNEL_PRIORITY_GUIDE_KEYS)) {
+    localStorage.setItem(key, 'seen')
+  }
   useAuthStore.getState().auth.setUser({
     id: 1,
     username: 'test',
@@ -228,6 +232,30 @@ function orderInView() {
 }
 
 test.each(['table', 'card'] as const)(
+  '%s view opens the matching tutorial without enabling drag mode',
+  async (view) => {
+    await mount(view, false)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Drag mode help' }))
+    const guide = within(await screen.findByRole('dialog'))
+    expect(
+      guide.getByRole('list', {
+        name: view === 'card' ? 'Card view' : 'Table view',
+      })
+    ).toBeVisible()
+    await user.click(guide.getByRole('button', { name: 'Got it' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    )
+    expect(screen.getByRole('button', { name: 'Drag mode' })).toHaveAttribute(
+      'aria-pressed',
+      'false'
+    )
+    expect(requests).toEqual([])
+  }
+)
+
+test.each(['table', 'card'] as const)(
   '%s keyboard reorder saves priority and undo restores it',
   async (view) => {
     await mount(view)
@@ -338,7 +366,7 @@ test('mobile view controls stay available with the filter panel collapsed', asyn
   ).toBeVisible()
 })
 
-function pointerGeometry() {
+function pointerGeometry(cardColumns = 3) {
   class TestPointerEvent extends MouseEvent {
     pointerId: number
     constructor(type: string, init: PointerEventInit) {
@@ -357,8 +385,8 @@ function pointerGeometry() {
           return new DOMRect(0, 100 + index * 60, 1000, 60)
         }
         return new DOMRect(
-          (index % 3) * 320,
-          100 + Math.floor(index / 3) * 220,
+          (index % cardColumns) * 320,
+          100 + Math.floor(index / cardColumns) * 220,
           300,
           200
         )
@@ -377,6 +405,137 @@ function pointerGeometry() {
     })
   }
 }
+
+test.each([
+  {
+    startY: 174,
+    jitterY: 169,
+    position: 'same',
+    hint: 'Release to join priority 80',
+  },
+  {
+    startY: 165,
+    jitterY: 171,
+    position: 'before',
+    hint: 'Release to insert a new priority tier',
+  },
+] as const)(
+  'table preserves $position mode through small pointer movements',
+  async ({ startY, jitterY, position, hint }) => {
+    await mount('table')
+    pointerGeometry()
+    const scope = screen.getByRole('region', { name: 'Channels' })
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Reorder channel 3' }),
+      { pointerId: 1, button: 0, clientX: 20, clientY: 250 }
+    )
+    fireEvent.pointerMove(scope, { pointerId: 1, clientX: 20, clientY: startY })
+    await screen.findByText(hint)
+    fireEvent.pointerMove(scope, {
+      pointerId: 1,
+      clientX: 20,
+      clientY: jitterY,
+    })
+    fireEvent.pointerUp(scope, { pointerId: 1, clientX: 20, clientY: jitterY })
+    await screen.findByRole('button', { name: 'Undo' })
+    expect(requests.filter((request) => !request.preview)).toEqual([
+      { id: 3, target_id: 2, position, revision: 'initial' },
+    ])
+  }
+)
+
+test('the compact table preview respects masked channel names', async () => {
+  await mount('table')
+  await userEvent.setup().click(screen.getByRole('button', { name: /^Hide$/ }))
+  pointerGeometry()
+  const scope = screen.getByRole('region', { name: 'Channels' })
+  fireEvent.pointerDown(
+    screen.getByRole('button', { name: 'Reorder channel 3' }),
+    { pointerId: 1, button: 0, clientX: 20, clientY: 250 }
+  )
+  fireEvent.pointerMove(scope, { pointerId: 1, clientX: 20, clientY: 190 })
+  await screen.findByText('Release to join priority 80')
+  const ghost = document.querySelector('[data-origin-x]')
+  expect(ghost).not.toHaveTextContent('Channel 3')
+  expect(ghost).toHaveTextContent('••••')
+  fireEvent.keyDown(window, { key: 'Escape' })
+  expect(requests.filter((request) => !request.preview)).toEqual([])
+})
+
+test('table targets stay in place and the compact preview leaves the target rows visible', async () => {
+  await mount('table')
+  pointerGeometry()
+  const scope = screen.getByRole('region', { name: 'Channels' })
+  fireEvent.pointerDown(
+    screen.getByRole('button', { name: 'Reorder channel 3' }),
+    { pointerId: 1, button: 0, clientX: 20, clientY: 250 }
+  )
+  fireEvent.pointerMove(scope, { pointerId: 1, clientX: 20, clientY: 105 })
+  await screen.findByText('Release to insert a new priority tier')
+  for (const row of document.querySelectorAll<HTMLElement>(
+    '[data-sortable-id]'
+  )) {
+    expect(row.style.transform).toBe('')
+  }
+  const ghost = document.querySelector<HTMLElement>('[data-origin-x]')
+  expect(ghost?.querySelector('tr')).toBeNull()
+  expect(
+    Number.parseFloat(ghost?.style.width ?? 'Infinity')
+  ).toBeLessThanOrEqual(320)
+  expect(ghost).toHaveTextContent('Channel 3')
+  fireEvent.pointerMove(scope, { pointerId: 1, clientX: 20, clientY: 190 })
+  await screen.findByText('Release to join priority 80')
+  fireEvent.pointerUp(scope, { pointerId: 1, clientX: 20, clientY: 190 })
+  await screen.findByRole('button', { name: 'Undo' })
+  expect(requests.filter((request) => !request.preview)).toEqual([
+    { id: 3, target_id: 2, position: 'same', revision: 'initial' },
+  ])
+  for (const row of document.querySelectorAll<HTMLElement>(
+    '[data-sortable-id]'
+  )) {
+    expect(row.style.transform).toBe('')
+  }
+})
+
+test('dropping below the table rows cancels instead of selecting a distant row', async () => {
+  await mount('table')
+  pointerGeometry()
+  const scope = screen.getByRole('region', { name: 'Channels' })
+  fireEvent.pointerDown(
+    screen.getByRole('button', { name: 'Reorder channel 3' }),
+    { pointerId: 1, button: 0, clientX: 20, clientY: 250 }
+  )
+  fireEvent.pointerMove(scope, { pointerId: 1, clientX: 20, clientY: 190 })
+  await screen.findByText('Release to join priority 80')
+  fireEvent.pointerMove(scope, { pointerId: 1, clientX: 20, clientY: 400 })
+  await waitFor(() =>
+    expect(
+      screen.queryByText('Release to join priority 80')
+    ).not.toBeInTheDocument()
+  )
+  fireEvent.pointerUp(scope, { pointerId: 1, clientX: 20, clientY: 400 })
+  await waitFor(() =>
+    expect(document.querySelector('[data-origin-x]')).not.toBeInTheDocument()
+  )
+  expect(requests.filter((request) => !request.preview)).toEqual([])
+})
+
+test('a card alone on the last grid row still uses horizontal edge targets', async () => {
+  await mount()
+  pointerGeometry(2)
+  const scope = screen.getByRole('region', { name: 'Channels' })
+  fireEvent.pointerDown(
+    screen.getByRole('button', { name: 'Reorder channel 3' }),
+    { pointerId: 1, button: 0, clientX: 20, clientY: 350 }
+  )
+  fireEvent.pointerMove(scope, { pointerId: 1, clientX: 340, clientY: 150 })
+  await screen.findByText('Release to insert a new priority tier')
+  fireEvent.pointerUp(scope, { pointerId: 1, clientX: 340, clientY: 150 })
+  await screen.findByRole('button', { name: 'Undo' })
+  expect(requests.filter((request) => !request.preview)).toEqual([
+    { id: 3, target_id: 2, position: 'before', revision: 'initial' },
+  ])
+})
 
 test('a quick card pointer drag saves even when released before an animation frame', async () => {
   await mount()
@@ -524,6 +683,8 @@ test('the header places reorder before batch mode while shared display controls 
   const toolbar = within(screen.getByRole('region', { name: 'Channels' }))
   const reorder = header.getByRole('button', { name: 'Drag mode' })
   reorder.focus()
+  await user.tab()
+  expect(header.getByRole('button', { name: 'Drag mode help' })).toHaveFocus()
   await user.tab()
   expect(header.getByRole('switch', { name: 'Batch Operations' })).toHaveFocus()
   expect(

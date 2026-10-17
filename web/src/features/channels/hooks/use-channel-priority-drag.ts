@@ -16,7 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { animate, type AnimationPlaybackControls } from 'motion'
+import {
+  animate,
+  type AnimationPlaybackControls,
+  type ValueAnimationTransition,
+} from 'motion'
 import { useReducedMotion } from 'motion/react'
 import {
   useCallback,
@@ -45,6 +49,25 @@ function scrollParent(element: HTMLElement): HTMLElement {
   return document.documentElement
 }
 
+function animateDragTransform(
+  element: HTMLElement,
+  transform: string,
+  transition: ValueAnimationTransition<string>
+): AnimationPlaybackControls {
+  // Animate the value directly so Motion cannot reapply a DOM transform after
+  // cleanup and React's final reorder have restored the row's natural position.
+  return animate(
+    element.style.transform || 'translate3d(0px, 0px, 0px)',
+    transform,
+    {
+      ...transition,
+      onUpdate: (value) => {
+        element.style.transform = value
+      },
+    }
+  )
+}
+
 type DragOptions = {
   items: Channel[]
   desc: boolean
@@ -65,6 +88,7 @@ type DragSlot = {
   minHeight: string
   willChange: string
   boxShadow: string
+  backgroundColor: string
   x: number
   y: number
 }
@@ -81,6 +105,7 @@ type DragPoint = {
   overlay: HTMLElement | null
   feedback: HTMLElement | null
   insertion: HTMLElement | null
+  insertionY: number | null
   drop: PriorityDrop | null
   source: HTMLElement
   opacity: string
@@ -96,6 +121,7 @@ type DragPoint = {
   hitIndex: number
   hitTarget: number | null
   horizontal: boolean
+  table: boolean
   destination: DOMRect | null
   scrollTop: number
   scrollLeft: number
@@ -136,6 +162,7 @@ export function useChannelPriorityDrag(options: DragOptions) {
         minHeight: slot.minHeight,
         willChange: slot.willChange,
         boxShadow: slot.boxShadow,
+        backgroundColor: slot.backgroundColor,
       })
       delete slot.element.dataset.priorityDrop
     }
@@ -145,7 +172,7 @@ export function useChannelPriorityDrag(options: DragOptions) {
   }, [])
 
   const preview = useCallback(
-    (current: DragPoint, drop: PriorityDrop | null) => {
+    (current: DragPoint, drop: PriorityDrop | null, settling = false) => {
       const ordered = drop
         ? previewPriorityDrop(current.items, drop, latest.current.desc)
         : current.items
@@ -159,6 +186,22 @@ export function useChannelPriorityDrag(options: DragOptions) {
       }
       const targetPriority =
         current.items.find((item) => item.id === drop?.target_id)?.priority ?? 0
+      current.insertionY = null
+      if (current.table && drop && drop.position !== 'same') {
+        const tierIDs = new Set(
+          current.items
+            .filter(
+              (item) =>
+                item.id !== current.id &&
+                (item.priority ?? 0) === targetPriority
+            )
+            .map((item) => item.id)
+        )
+        const tier = current.slots.filter((slot) => tierIDs.has(slot.id))
+        const before = (drop.position === 'before') === latest.current.desc
+        current.insertionY =
+          (before ? tier[0]?.rect.top : tier.at(-1)?.rect.bottom) ?? null
+      }
       for (const [index, item] of ordered.entries()) {
         const slot = current.slotsByID.get(item.id)
         const destination = current.slots[index]?.rect
@@ -172,19 +215,29 @@ export function useChannelPriorityDrag(options: DragOptions) {
         slot.element.style.boxShadow = joining
           ? 'inset 0 0 0 2px var(--primary)'
           : slot.boxShadow
+        if (current.table) {
+          slot.element.style.backgroundColor = joining
+            ? 'color-mix(in srgb, var(--primary) 8%, var(--card))'
+            : slot.backgroundColor
+        }
         const x = destination.left - slot.rect.left
         const y = destination.top - slot.rect.top
         if (item.id === current.id) current.destination = destination
+        // Table rows remain stable hit targets; animate the result on release.
+        if (current.table && !settling) continue
         if (slot.x === x && slot.y === y) continue
         slot.x = x
         slot.y = y
         const transform = `translate3d(${x}px, ${y}px, 0)`
         animations.current.get(slot.element)?.stop()
-        if (item.id === current.id) slot.element.style.transform = transform
-        else {
+        if (item.id === current.id) {
+          if (!current.table) slot.element.style.transform = transform
+        } else if (transition.duration === 0) {
+          slot.element.style.transform = transform
+        } else {
           animations.current.set(
             slot.element,
-            animate(slot.element, { transform }, transition)
+            animateDragTransform(slot.element, transform, transition)
           )
         }
       }
@@ -213,6 +266,41 @@ export function useChannelPriorityDrag(options: DragOptions) {
       if (current.insertion) current.insertion.hidden = true
       current.commit = commit && !!current.target
       released.current = current
+      if (transition.duration === 0) {
+        clearVisuals(current)
+        if (current.commit) void latest.current.commit()
+        else latest.current.cancel()
+        return
+      }
+      if (current.table) {
+        if (current.overlay) current.overlay.hidden = true
+        if (!current.commit) {
+          clearVisuals(current)
+          latest.current.cancel()
+          return
+        }
+        current.source.style.opacity = current.opacity
+        preview(current, current.drop, true)
+        const source = current.slotsByID.get(current.id)
+        if (!source) {
+          clearVisuals(current)
+          latest.current.cancel()
+          return
+        }
+        landing.current = animateDragTransform(
+          current.source,
+          `translate3d(${source.x}px, ${source.y}px, 0)`,
+          {
+            ...transition,
+            onComplete: () => {
+              clearVisuals(current)
+              if (current.commit) void latest.current.commit()
+              else latest.current.cancel()
+            },
+          }
+        )
+        return
+      }
       if (!current.commit) preview(current, null)
       const origin = current.slotsByID.get(current.id)?.rect
       const target = current.destination ?? origin
@@ -228,9 +316,9 @@ export function useChannelPriorityDrag(options: DragOptions) {
         current.scrollLeft
       const y =
         target.top - origin.top - current.scroller.scrollTop + current.scrollTop
-      landing.current = animate(
+      landing.current = animateDragTransform(
         current.clone,
-        { transform: `translate3d(${x}px, ${y}px, 0)` },
+        `translate3d(${x}px, ${y}px, 0)`,
         {
           ...transition,
           onComplete: () => {
@@ -271,6 +359,7 @@ export function useChannelPriorityDrag(options: DragOptions) {
           minHeight: element.style.minHeight,
           willChange: element.style.willChange,
           boxShadow: element.style.boxShadow,
+          backgroundColor: element.style.backgroundColor,
           x: 0,
           y: 0,
         }))
@@ -279,55 +368,67 @@ export function useChannelPriorityDrag(options: DragOptions) {
         )
         const origin = current.slotsByID.get(current.id)?.rect
         if (!origin) return
-        const cellWidths =
-          current.source.tagName === 'TR'
-            ? [...current.source.children].map(
-                (cell) => cell.getBoundingClientRect().width
-              )
-            : []
+        current.table = current.source.tagName === 'TR'
         current.scrollBounds = current.scroller.getBoundingClientRect()
         current.rootBounds = root.current.getBoundingClientRect()
         current.scrollTop = current.scroller.scrollTop
         current.scrollLeft = current.scroller.scrollLeft
         current.horizontal =
-          current.source.tagName !== 'TR' &&
+          !current.table &&
           current.slots.some(
-            (slot) =>
-              slot.id !== current.id && Math.abs(slot.rect.top - origin.top) < 4
+            (slot, index) =>
+              index > 0 &&
+              Math.abs(
+                slot.rect.top - (current.slots[index - 1]?.rect.top ?? Infinity)
+              ) < 4
           )
         current.destination = origin
         current.moved = true
         latest.current.begin()
 
-        const clone = current.source.cloneNode(true) as HTMLElement
+        let clone: HTMLElement
+        if (current.table) {
+          clone = document.createElement('div')
+          const identity = document.createElement('div')
+          identity.className =
+            'flex min-w-0 items-center gap-2 px-3 pt-3 text-sm'
+          const name = document.createElement('span')
+          name.className = 'min-w-0 flex-1 truncate font-medium'
+          // Read displayed text so the preview respects the visibility toggle.
+          name.textContent =
+            current.source.querySelector('[data-column-id="name"]')
+              ?.textContent ?? ''
+          const priority = document.createElement('span')
+          priority.dataset.columnId = 'priority'
+          priority.className =
+            'text-muted-foreground shrink-0 font-mono text-xs'
+          const value = document.createElement('span')
+          value.dataset.slot = 'numeric-spinner-value'
+          value.textContent =
+            current.source.querySelector(
+              '[data-column-id="priority"] [data-slot="numeric-spinner-value"]'
+            )?.textContent ?? ''
+          priority.append(value)
+          identity.append(name, priority)
+          clone.append(identity)
+        } else clone = current.source.cloneNode(true) as HTMLElement
         clone.style.animation = 'none'
         clone.removeAttribute('id')
         clone.removeAttribute('data-sortable-id')
         clone
           .querySelectorAll('[id]')
           .forEach((element) => element.removeAttribute('id'))
-        let ghost = clone
-        if (current.source.tagName === 'TR') {
-          const table = document.createElement('table')
-          table.className = current.source.closest('table')?.className ?? ''
-          const cells = [...clone.children]
-          cells.forEach((cell, index) => {
-            ;(cell as HTMLElement).style.width = `${cellWidths[index]}px`
-          })
-          const body = document.createElement('tbody')
-          body.append(clone)
-          table.append(body)
-          ghost = table
-        }
+        const ghost = clone
         ghost.dataset.originX = String(origin.left)
         ghost.dataset.originY = String(origin.top)
         Object.assign(ghost.style, {
           position: 'absolute',
-          left: `${origin.left}px`,
-          top: `${origin.top}px`,
+          left: current.table ? '0' : `${origin.left}px`,
+          top: current.table ? '0' : `${origin.top}px`,
           margin: '0',
-          width: `${origin.width}px`,
-          height: `${origin.height}px`,
+          width: current.table ? '300px' : `${origin.width}px`,
+          maxWidth: 'calc(100vw - 16px)',
+          height: current.table ? 'auto' : `${origin.height}px`,
           pointerEvents: 'none',
           background: 'var(--card)',
           borderRadius: 'var(--radius)',
@@ -360,7 +461,7 @@ export function useChannelPriorityDrag(options: DragOptions) {
         })
         const feedback = document.createElement('div')
         Object.assign(feedback.style, {
-          position: 'absolute',
+          position: current.table ? 'relative' : 'absolute',
           left: '0',
           top: '0',
           width: '300px',
@@ -368,7 +469,11 @@ export function useChannelPriorityDrag(options: DragOptions) {
           pointerEvents: 'none',
           willChange: 'transform',
         })
-        overlay.append(ghost, insertion, feedback)
+        if (current.table) {
+          feedback.dataset.priorityView = 'table'
+          ghost.append(feedback)
+          overlay.append(insertion, ghost)
+        } else overlay.append(ghost, insertion, feedback)
         document.body.append(overlay)
         current.feedback = feedback
         current.insertion = insertion
@@ -418,12 +523,19 @@ export function useChannelPriorityDrag(options: DragOptions) {
       const slot = current.slots[hitIndex]
       if (
         slot &&
+        pointerX >= slot.rect.left - 8 &&
+        pointerX <= slot.rect.right + 8 &&
+        pointerY >= slot.rect.top - 8 &&
+        pointerY <= slot.rect.bottom + 8 &&
         current.x >= current.rootBounds.left &&
         current.x <= current.rootBounds.right &&
         current.y >= current.rootBounds.top &&
         current.y <= current.rootBounds.bottom
       ) {
-        if (hitIndex !== current.hitIndex) {
+        if (current.table) {
+          current.hitIndex = hitIndex
+          current.hitTarget = slot.id === current.id ? null : slot.id
+        } else if (hitIndex !== current.hitIndex) {
           current.hitIndex = hitIndex
           const occupant = current.ordered[hitIndex]
           // Resolve the card/row now occupying this slot, not its original ID.
@@ -433,22 +545,33 @@ export function useChannelPriorityDrag(options: DragOptions) {
           }
         }
         if (current.hitTarget !== null) {
-          const fraction = current.horizontal
-            ? (pointerX - slot.rect.left) / slot.rect.width
-            : (pointerY - slot.rect.top) / slot.rect.height
-          let position: PriorityPosition = 'same'
-          if (fraction < 0.25) {
-            position = latest.current.desc ? 'before' : 'after'
-          } else if (fraction > 0.75) {
-            position = latest.current.desc ? 'after' : 'before'
+          const offset = current.horizontal
+            ? pointerX - slot.rect.left
+            : pointerY - slot.rect.top
+          const size = current.horizontal ? slot.rect.width : slot.rect.height
+          const edge = Math.min(current.table ? 10 : 24, size * 0.18)
+          const leading: PriorityPosition = latest.current.desc
+            ? 'before'
+            : 'after'
+          const trailing: PriorityPosition = latest.current.desc
+            ? 'after'
+            : 'before'
+          let leadingEdge = edge
+          let trailingEdge = size - edge
+          if (current.drop?.target_id === current.hitTarget) {
+            leadingEdge += current.drop.position === leading ? 3 : -3
+            trailingEdge += current.drop.position === trailing ? -3 : 3
           }
+          let position: PriorityPosition = 'same'
+          if (offset < leadingEdge) position = leading
+          else if (offset > trailingEdge) position = trailing
           next = { id: current.id, target_id: current.hitTarget, position }
         }
       } else {
         current.hitIndex = -1
         current.hitTarget = null
       }
-      if (current.clone) {
+      if (current.clone && !current.table) {
         current.clone.style.transform = `translate3d(${current.x - current.startX}px, ${current.y - current.startY}px, 0)`
       }
       const key = next ? `${next.target_id}:${next.position}` : ''
@@ -464,9 +587,15 @@ export function useChannelPriorityDrag(options: DragOptions) {
         )
         const top = Math.max(
           8,
-          Math.min(current.y + 20, window.innerHeight - 148)
+          Math.min(
+            current.table ? current.y - 132 : current.y + 20,
+            window.innerHeight - 148
+          )
         )
-        current.feedback.style.transform = `translate3d(${left}px, ${top}px, 0)`
+        const floating = current.table ? current.clone : current.feedback
+        if (floating) {
+          floating.style.transform = `translate3d(${left}px, ${top}px, 0)`
+        }
       }
       const destination = current.destination
       if (current.insertion) {
@@ -474,7 +603,7 @@ export function useChannelPriorityDrag(options: DragOptions) {
           !current.drop || current.drop.position === 'same' || !destination
         if (!current.insertion.hidden && destination) {
           const left = destination.left - scrollX
-          const top = destination.top - scrollY
+          const top = (current.insertionY ?? destination.top) - scrollY
           const vertical = current.horizontal
           Object.assign(current.insertion.style, {
             transform: `translate3d(${vertical ? left - 6 : Math.max(left, current.scrollBounds.left)}px, ${vertical ? top : top - 2}px, 0)`,
@@ -521,6 +650,7 @@ export function useChannelPriorityDrag(options: DragOptions) {
         overlay: null,
         feedback: null,
         insertion: null,
+        insertionY: null,
         drop: null,
         source,
         opacity: source.style.opacity,
@@ -536,6 +666,7 @@ export function useChannelPriorityDrag(options: DragOptions) {
         hitIndex: -1,
         hitTarget: null,
         horizontal: false,
+        table: false,
         destination: null,
         scrollTop: 0,
         scrollLeft: 0,

@@ -17,9 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { ArrowDown, ArrowUp, GripVertical, Undo2 } from 'lucide-react'
-import { useContext, useSyncExternalStore } from 'react'
+import { useContext, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import type { DataTableViewMode } from '@/components/data-table'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import {
@@ -37,9 +38,11 @@ import {
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 
+import { CHANNEL_PRIORITY_GUIDE_KEYS } from '../constants'
 import type { useChannelPriorityOrder } from '../hooks/use-channel-priority-order'
 import type { ChannelSortBy } from '../types'
 import { ChannelPriorityContext } from './channel-priority-context'
+import { ChannelPriorityGuide } from './channel-priority-guide'
 
 export function ChannelPriorityHandle(props: { id: number }) {
   const controls = useContext(ChannelPriorityContext)
@@ -141,10 +144,35 @@ export function ChannelSortControl(props: {
 
 export function ChannelPriorityModeToggle(props: {
   active: boolean
+  viewMode: DataTableViewMode
   reason: 'sort' | 'tag' | 'permission' | 'busy' | null
   onChange: () => void
 }) {
   const { t } = useTranslation()
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [guideSeen, setGuideSeen] = useState<
+    Partial<Record<DataTableViewMode, boolean>>
+  >(() => {
+    try {
+      return {
+        card: localStorage.getItem(CHANNEL_PRIORITY_GUIDE_KEYS.card) === 'seen',
+        table:
+          localStorage.getItem(CHANNEL_PRIORITY_GUIDE_KEYS.table) === 'seen',
+      }
+    } catch {
+      return {}
+    }
+  })
+  const handleGuideOpenChange = (open: boolean) => {
+    setGuideOpen(open)
+    if (open) return
+    setGuideSeen((seen) => ({ ...seen, [props.viewMode]: true }))
+    try {
+      localStorage.setItem(CHANNEL_PRIORITY_GUIDE_KEYS[props.viewMode], 'seen')
+    } catch {
+      // Remember dismissal for this visit when browser storage is unavailable.
+    }
+  }
   let hint = t('Drag mode')
   if (props.reason === 'sort') hint = t('Sort by priority to drag channels')
   if (props.reason === 'tag') hint = t('Disable tag grouping to drag channels')
@@ -153,22 +181,36 @@ export function ChannelPriorityModeToggle(props: {
   }
   if (props.reason === 'busy') hint = t('Saving...')
   return (
-    <Tooltip>
-      <TooltipTrigger render={<span className='inline-flex' />}>
-        <Button
-          type='button'
-          variant='outline'
-          className='text-muted-foreground aria-pressed:border-primary/30 aria-pressed:bg-primary/10 aria-pressed:text-primary aria-pressed:hover:bg-primary/15'
-          aria-pressed={props.active}
-          disabled={!!props.reason}
-          onClick={props.onChange}
+    <ButtonGroup aria-label={t('Drag mode')} className='shrink-0'>
+      <Tooltip>
+        <TooltipTrigger
+          render={<span className='inline-flex [&>button]:rounded-r-none' />}
         >
-          <GripVertical className='size-4' aria-hidden />
-          {props.active ? t('Finish reordering') : t('Drag mode')}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{hint}</TooltipContent>
-    </Tooltip>
+          <Button
+            type='button'
+            variant='outline'
+            className='text-muted-foreground aria-pressed:border-primary/30 aria-pressed:bg-primary/10 aria-pressed:text-primary aria-pressed:hover:bg-primary/15'
+            aria-pressed={props.active}
+            disabled={!!props.reason}
+            onClick={() => {
+              props.onChange()
+              if (!props.active && !guideSeen[props.viewMode]) {
+                setGuideOpen(true)
+              }
+            }}
+          >
+            <GripVertical className='size-4' aria-hidden />
+            {props.active ? t('Finish reordering') : t('Drag mode')}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{hint}</TooltipContent>
+      </Tooltip>
+      <ChannelPriorityGuide
+        open={guideOpen}
+        viewMode={props.viewMode}
+        onOpenChange={handleGuideOpenChange}
+      />
+    </ButtonGroup>
   )
 }
 

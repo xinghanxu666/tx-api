@@ -24,6 +24,7 @@ import { useTranslation } from 'react-i18next'
 import { Badge } from '@/components/ui/badge'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
 import type { useChannelPriorityOrder } from '../hooks/use-channel-priority-order'
 import type { Channel } from '../types'
@@ -58,7 +59,11 @@ export function ChannelPriorityDropHint(props: {
   return createPortal(
     <div
       data-priority-hint
-      className='bg-popover text-popover-foreground rounded-xl border p-3 shadow-xl'
+      className={cn(
+        'text-popover-foreground p-3',
+        props.container.dataset.priorityView !== 'table' &&
+          'bg-popover rounded-xl border shadow-xl'
+      )}
     >
       <Badge
         variant={joining ? 'default' : 'warning'}
