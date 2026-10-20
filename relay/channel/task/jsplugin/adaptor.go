@@ -753,8 +753,69 @@ func (a *TaskAdaptor) doFetchDescriptor(baseURL, key, proxy string, descriptor r
 	if err != nil {
 		return nil, err
 	}
+	// Clients are cached across channels. Keep the redirect policy and its
+	// credential state local to this query, while reusing the transport.
+	queryClient := *client
+	credentialsStripped := false
+	var redirectPolicyErr error
+	queryClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if strings.EqualFold(via[len(via)-1].URL.Scheme, "https") && !strings.EqualFold(next.URL.Scheme, "https") {
+			redirectPolicyErr = fmt.Errorf("task query redirect cannot downgrade HTTPS")
+			return redirectPolicyErr
+		}
+		// Redirects use the same credential recipients as direct plugin
+		// requests: the channel base host and the plugin's allowedHosts.
+		if pluginruntime.ValidateRequestURL(next.URL.String(), baseURL, a.plugin.Meta.AllowedHosts) != nil {
+			credentialsStripped = true
+		}
+		if credentialsStripped {
+			// A 307/308 can replay credentials or private task data in the
+			// body even after the credential headers have been removed.
+			if next.Body != nil && next.Body != http.NoBody {
+				redirectPolicyErr = fmt.Errorf("task query redirect cannot replay a body to an origin without credential authorization")
+				return redirectPolicyErr
+			}
+			// Plugin and channel headers can use arbitrary credential names.
+			// Keep only representation preferences, and do this on every
+			// later hop: net/http copies headers from the initial request.
+			for name := range next.Header {
+				switch http.CanonicalHeaderKey(name) {
+				case "Accept", "Accept-Language":
+				default:
+					delete(next.Header, name)
+				}
+			}
+			next.Host = ""
+			next.URL.User = nil
+		} else {
+			// net/http may have already removed standard credentials for a
+			// different domain. Restore them only along an authorized chain;
+			// crossing an untrusted origin can never restore credentials later.
+			for _, name := range []string{"Authorization", "Www-Authenticate", "Cookie", "Cookie2", "Proxy-Authorization", "Proxy-Authenticate"} {
+				if values, ok := req.Header[name]; ok {
+					next.Header[name] = slices.Clone(values)
+				}
+			}
+		}
+		if client.CheckRedirect != nil {
+			if err := client.CheckRedirect(next, via); err != nil {
+				if err == http.ErrUseLastResponse {
+					return err
+				}
+				// The shared SSRF policy includes the target URL in errors.
+				// Keep its diagnostic reason without exposing signed URLs.
+				redirectPolicyErr = errors.New(strings.ReplaceAll(err.Error(), next.URL.String(), next.URL.Scheme+"://"+next.URL.Host))
+				return redirectPolicyErr
+			}
+			return nil
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return service.ValidateSSRFProtectedFetchURL(next.URL.String())
+	}
 	started := time.Now()
-	resp, err := client.Do(req)
+	resp, err := queryClient.Do(req)
 	if err != nil {
 		logger.LogDebug(
 			context.Background(),
@@ -763,6 +824,11 @@ func (a *TaskAdaptor) doFetchDescriptor(baseURL, key, proxy string, descriptor r
 			method,
 			time.Since(started).Milliseconds(),
 		)
+		if redirectPolicyErr != nil {
+			// net/http wraps redirect errors with the Location URL, which
+			// may contain credentials. Polling logs only the policy reason.
+			return nil, redirectPolicyErr
+		}
 		return nil, err
 	}
 	logger.LogDebug(
