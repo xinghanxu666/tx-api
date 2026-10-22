@@ -98,6 +98,10 @@ type taskResult struct {
 
 var taskArtifactKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
 
+// gatewayCredentialHeaders carry the client's gateway credentials. Driver
+// hooks receive every other request header.
+var gatewayCredentialHeaders = []string{"Authorization", "Proxy-Authorization", "Cookie", "X-Api-Key", "X-Goog-Api-Key", "Mj-Api-Secret"}
+
 const maxTaskArtifacts = 64
 
 // maxTaskPluginPersistedJSONBytes is the shared ceiling for taskData and plugin state.
@@ -1569,6 +1573,12 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 				routeRequest.Query = make(map[string][]string, len(c.Request.URL.Query()))
 				for key, values := range c.Request.URL.Query() {
 					routeRequest.Query[key] = append([]string(nil), values...)
+				}
+			}
+			for name, values := range c.Request.Header {
+				name = http.CanonicalHeaderKey(name)
+				if len(values) > 0 && !slices.Contains(gatewayCredentialHeaders, name) {
+					requestHeaders[name] = values[0]
 				}
 			}
 			requestHeaders["Content-Type"] = c.GetHeader("Content-Type")
