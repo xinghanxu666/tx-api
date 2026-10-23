@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "rsbuild dev",
     "build": "rsbuild build",
-    "build:check": "tsgo -b && rsbuild build",
-    "typecheck": "tsgo -b",
+    "build:check": "bun check -b && rsbuild build",
+    "typecheck": "bun check -b",
     "lint": "oxlint -c .oxlintrc.json .",
     "lint:fix": "oxlint -c .oxlintrc.json . --fix",
     "lint:plugins": "cd ../plugins && oxlint -c .oxlintrc.json .",
@@ -100,7 +100,6 @@
     "@types/node-forge": "^1.3.14",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@typescript/native-preview": "^7.0.0-dev.20260702.3",
     "@xyflow/react": "^12.11.1",
     "embla-carousel-react": "^8.6.0",
     "jsdom": "^29.1.1",
@@ -123,5 +122,6 @@
     "postcss": "8.5.15",
     "qs": "6.15.2",
     "uuid": "14.0.0"
-  }
+  },
+  "packageManager": "bun@1.4.4"
 }
