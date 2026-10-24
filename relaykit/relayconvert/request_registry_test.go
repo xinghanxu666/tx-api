@@ -824,6 +824,73 @@ func TestConvertRequestResponsesToGeminiSkipsThoughtSignatureWhenDisabled(t *tes
 	assert.Empty(t, geminiReq.Contents[0].Parts[0].ThoughtSignature)
 }
 
+func TestConvertRequestOpenAIChatToGeminiImageConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields string
+		want   string
+	}{
+		{
+			name: "omitted",
+		},
+		{
+			name:   "top level 4K",
+			fields: `,"imageConfig":{"imageSize":"4K"}`,
+			want:   `{"imageSize":"4K"}`,
+		},
+		{
+			name:   "top level aspect ratio",
+			fields: `,"imageConfig":{"imageSize":"4K","aspectRatio":"16:9"}`,
+			want:   `{"imageSize":"4K","aspectRatio":"16:9"}`,
+		},
+		{
+			name:   "google extra body",
+			fields: `,"extra_body":{"google":{"image_config":{"image_size":"4K","aspect_ratio":"16:9"}}}`,
+			want:   `{"imageSize":"4K","aspectRatio":"16:9"}`,
+		},
+		{
+			name:   "google extra body takes precedence",
+			fields: `,"imageConfig":{"imageSize":"1K"},"extra_body":{"google":{"image_config":{"image_size":"4K"}}}`,
+			want:   `{"imageSize":"4K"}`,
+		},
+		{
+			name:   "empty google image config keeps top level config",
+			fields: `,"imageConfig":{"imageSize":"4K"},"extra_body":{"google":{"image_config":{}}}`,
+			want:   `{"imageSize":"4K"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := `{"model":"gemini-3.1-flash-image-preview","temperature":0.7,"top_p":1,"messages":[{"role":"user","content":[{"type":"text","text":"Remove the distant car"}]}]` + tt.fields + `}`
+			var request dto.GeneralOpenAIRequest
+			require.NoError(t, kitutil.Unmarshal([]byte(raw), &request))
+
+			body, err := kitutil.Marshal(request)
+			require.NoError(t, err)
+			var copiedRequest dto.GeneralOpenAIRequest
+			require.NoError(t, kitutil.Unmarshal(body, &copiedRequest))
+
+			result, err := ConvertRequest(context.Background(), nil, types.RelayFormatGemini, &copiedRequest)
+			require.NoError(t, err)
+			body, err = kitutil.Marshal(result.Value)
+			require.NoError(t, err)
+			var upstream map[string]json.RawMessage
+			require.NoError(t, kitutil.Unmarshal(body, &upstream))
+			var generationConfig map[string]json.RawMessage
+			require.NoError(t, kitutil.Unmarshal(upstream["generationConfig"], &generationConfig))
+
+			assert.NotContains(t, upstream, "imageConfig")
+			if tt.want == "" {
+				assert.NotContains(t, generationConfig, "imageConfig")
+				return
+			}
+			require.Contains(t, generationConfig, "imageConfig")
+			assert.JSONEq(t, tt.want, string(generationConfig["imageConfig"]))
+		})
+	}
+}
+
 func TestConvertRequestOpenAIChatToGeminiAddsThoughtSignatureForAdvancedCustom(t *testing.T) {
 	assistantMessage := dto.Message{Role: "assistant", Content: ""}
 	assistantMessage.SetToolCalls([]dto.ToolCallRequest{
