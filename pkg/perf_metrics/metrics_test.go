@@ -139,22 +139,49 @@ func TestRecordTaskResultSamplesTerminalTasks(t *testing.T) {
 	}, relaycommon.FailTaskInfo("boom"))
 	RecordTaskResult(&model.Task{Status: model.TaskStatusSuccess, FinishTime: now}, nil)
 
+	assert.Equal(t, map[bucketKey]counters{
+		{model: "video-model", group: "a"}: {
+			requestCount:   2,
+			successCount:   1,
+			totalLatencyMs: 180000,
+			outputTokens:   5000,
+			generationMs:   100000,
+		},
+	}, mergedHotBuckets())
+}
+
+// Immediate submit results: only successes are sampled, timed from relay start.
+func TestRecordImmediateTaskResultSamplesSuccessOnly(t *testing.T) {
+	hotBuckets.Clear()
+	t.Cleanup(func() { hotBuckets.Clear() })
+	info := &relaycommon.RelayInfo{OriginModelName: "image-model", UsingGroup: "a", StartTime: time.Now().Add(-2 * time.Second)}
+	RecordImmediateTaskResult(info, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess, TotalTokens: 4096})
+	RecordImmediateTaskResult(info, relaycommon.FailTaskInfo("boom"))
+	RecordImmediateTaskResult(info, &relaycommon.TaskInfo{Status: model.TaskStatusInProgress})
+	RecordImmediateTaskResult(info, nil)
+
+	merged := mergedHotBuckets()
+	require.Len(t, merged, 1)
+	got := merged[bucketKey{model: "image-model", group: "a"}]
+	assert.GreaterOrEqual(t, got.totalLatencyMs, int64(2000))
+	assert.Equal(t, counters{
+		requestCount:   1,
+		successCount:   1,
+		totalLatencyMs: got.totalLatencyMs,
+		outputTokens:   4096,
+		generationMs:   got.totalLatencyMs,
+	}, got)
+}
+
+func mergedHotBuckets() map[bucketKey]counters {
 	merged := map[bucketKey]counters{}
 	hotBuckets.Range(func(key, value any) bool {
 		k := key.(bucketKey)
-		require.Equal(t, "video-model", k.model)
-		require.Equal(t, "a", k.group)
 		k.bucketTs = 0
 		mergeCounters(merged, k, value.(*atomicBucket).snapshot())
 		return true
 	})
-	assert.Equal(t, counters{
-		requestCount:   2,
-		successCount:   1,
-		totalLatencyMs: 180000,
-		outputTokens:   5000,
-		generationMs:   100000,
-	}, merged[bucketKey{model: "video-model", group: "a"}])
+	return merged
 }
 
 // TEST_PERF_MYSQL_DSN / TEST_PERF_POSTGRES_DSN optionally run the aggregation
