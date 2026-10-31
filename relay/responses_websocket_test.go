@@ -16,7 +16,9 @@ import (
 	appdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -159,6 +161,7 @@ func TestSelectResponsesWSChannelAcceptsNativeResponsesChannelTypes(t *testing.T
 		advanced    *dto.AdvancedCustomConfig
 		rejectedBy  appdto.ChannelFilterKind
 	}{
+		{name: "azure", channelType: constant.ChannelTypeAzure},
 		{name: "new api", channelType: constant.ChannelTypeNewAPI},
 		{name: "sub2api", channelType: constant.ChannelTypeSub2API},
 		{name: "advanced custom native responses route", channelType: constant.ChannelTypeAdvancedCustom, advanced: nativeRoute},
@@ -188,6 +191,68 @@ func TestSelectResponsesWSChannelAcceptsNativeResponsesChannelTypes(t *testing.T
 			require.Nil(t, apiErr)
 			require.NotNil(t, selected)
 			assert.Equal(t, channel.Id, selected.Id)
+		})
+	}
+}
+
+func TestResponsesWSAzureDialUsesAzureResponsesURLAndAPIKey(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		host           string
+		responsesVer   string
+		wantPath       string
+		wantAPIVersion string
+		channelAPIVer  string
+	}{
+		{name: "openai v1 default preview", wantPath: "/openai/v1/responses", wantAPIVersion: "preview"},
+		{name: "channel responses version", responsesVer: "2025-04-01-preview", wantPath: "/openai/v1/responses", wantAPIVersion: "2025-04-01-preview"},
+		{name: "cognitiveservices uses channel api version", host: "cognitiveservices.azure.com", channelAPIVer: "2025-03-01-preview", wantPath: "/openai/responses", wantAPIVersion: "2025-03-01-preview"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handshake := make(chan *http.Request, 1)
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handshake <- r
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				_ = conn.Close()
+			}))
+			defer server.Close()
+
+			// The host check only inspects the base URL text, so a path segment
+			// is enough to select the cognitiveservices URL form.
+			baseURL := server.URL
+			if tc.host != "" {
+				baseURL += "/" + tc.host
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			info := &relaycommon.RelayInfo{
+				RelayMode:      relayconstant.RelayModeResponses,
+				RequestURLPath: "/v1/responses",
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelType:          constant.ChannelTypeAzure,
+					ChannelBaseUrl:       baseURL,
+					ApiType:              constant.APITypeOpenAI,
+					ApiVersion:           tc.channelAPIVer,
+					ApiKey:               "azure-key",
+					UpstreamModelName:    "gpt-test",
+					ChannelOtherSettings: dto.ChannelOtherSettings{AzureResponsesVersion: tc.responsesVer},
+				},
+			}
+			adaptor := GetAdaptor(info.ApiType)
+			adaptor.Init(info)
+			target, err := relaychannel.DoWssRequest(adaptor, c, info, nil)
+			require.NoError(t, err)
+			_ = target.Close()
+
+			r := <-handshake
+			assert.Equal(t, strings.TrimPrefix(baseURL, server.URL)+tc.wantPath, r.URL.Path)
+			assert.Equal(t, tc.wantAPIVersion, r.URL.Query().Get("api-version"))
+			assert.Equal(t, "azure-key", r.Header.Get("api-key"))
+			assert.Empty(t, r.Header.Get("Authorization"))
 		})
 	}
 }
@@ -566,24 +631,35 @@ func TestResponsesWSShutdownInterruptsBusyWriter(t *testing.T) {
 	defer cleanupTarget()
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &responsesWSSession{ctx: ctx, cancel: cancel, client: server, target: target}
-	// A blocked network writer owns this lock. Closing the connection must
-	// remain possible so that writer can be interrupted.
+	// Blocked network writers own these locks. Shutdown must not wait for
+	// them: its close frames are bounded control writes, and closing the
+	// sockets is what interrupts those writers.
+	s.clientWriteMu.Lock()
+	defer s.clientWriteMu.Unlock()
 	s.targetWriteMu.Lock()
 	defer s.targetWriteMu.Unlock()
 	done := make(chan struct{})
-	go func() { s.shutdown(); close(done) }()
+	go func() { s.shutdown(websocket.CloseInternalServerErr, "upstream connection closed"); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("shutdown waited for the network writer")
+		t.Fatal("shutdown waited for a network writer")
 	}
-	require.NoError(t, peer.SetReadDeadline(time.Now().Add(time.Second)))
-	_, _, err := peer.ReadMessage()
-	assert.Error(t, err)
-	require.NoError(t, client.SetReadDeadline(time.Now().Add(time.Second)))
-	_, _, err = client.ReadMessage()
-	assert.Error(t, err)
+	// A dropped socket would read as a synthetic 1006; 1011 is the frame.
+	for _, conn := range []*websocket.Conn{client, peer} {
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+		_, _, err := conn.ReadMessage()
+		assert.True(t, websocket.IsCloseError(err, websocket.CloseInternalServerErr), "want a 1011 close frame, got %v", err)
+	}
 	assert.Nil(t, s.getTarget())
+
+	// An upstream dial that completes after shutdown is closed with a frame too.
+	late, latePeer, cleanupLate := newTestWebSocketPair(t)
+	defer cleanupLate()
+	assert.False(t, s.setTarget(late))
+	require.NoError(t, latePeer.SetReadDeadline(time.Now().Add(time.Second)))
+	_, _, err := latePeer.ReadMessage()
+	assert.True(t, websocket.IsCloseError(err, websocket.CloseNormalClosure), "want a 1000 close frame, got %v", err)
 }
 
 func TestResponsesWSPassthroughPreservesRawPricingParameters(t *testing.T) {

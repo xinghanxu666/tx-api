@@ -1,6 +1,7 @@
 package plugins_test
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -200,4 +201,133 @@ func decodePluginValue(t *testing.T, value any) map[string]any {
 	var decoded map[string]any
 	require.NoError(t, common.Unmarshal(encoded, &decoded))
 	return decoded
+}
+
+// A New API channel reaches Vertex AI through another gateway's /vertex-ai
+// route, which runs the request in the gateway's own project. Operation names
+// carry the caller's path and the gateway task id, never the gateway's project,
+// and fetchPredictOperation on such a name reads that gateway task.
+func TestVertexAIThroughNewAPIGateway(t *testing.T) {
+	source, err := builtinplugins.Source("vertex-ai")
+	require.NoError(t, err)
+	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{Key: "vertex-ai"})
+	require.NoError(t, err)
+	call := func(export string, members []string, args ...any) map[string]any {
+		t.Helper()
+		value, err := plugin.Engine.CallPath(t.Context(), export, members, args...)
+		require.NoError(t, err)
+		return decodePluginValue(t, value)
+	}
+	const veo = "veo-3.0-generate-001"
+	const route = "https://gateway.example/vertex-ai/v1/projects/-/locations/global/publishers/google/models/" + veo
+	gateway := map[string]any{"kind": "new_api"}
+	gatewayAuth := map[string]any{"authHeader": "Bearer sk-gateway"}
+
+	downstream := map[string]any{
+		"requestBody": map[string]any{"model": veo, "prompt": "p", "duration": 6, "images": []any{"data:image/png;base64,aGVsbG8="},
+			"metadata": map[string]any{"resolution": "1080p", "generateAudio": false}},
+		"model": veo, "upstreamModel": veo, "baseUrl": "https://gateway.example", "apiKey": "sk-gateway",
+		"authHeader": "Bearer sk-gateway", "auth": gatewayAuth, "upstream": gateway,
+	}
+	sent := call("buildSubmitRequest", nil, downstream)
+	assert.Equal(t, route+":predictLongRunning", sent["url"])
+	assert.Equal(t, map[string]any{"Accept": "application/json", "Content-Type": "application/json", "Authorization": "Bearer sk-gateway"}, sent["headers"])
+
+	submitParams := map[string]any{"project": "-", "location": "global", "model": veo + ":predictLongRunning"}
+	intent := call("native", []string{"modelMethod"}, map[string]any{"params": submitParams, "body": map[string]any{"kind": "json", "value": sent["body"]}})
+	assert.Equal(t, "submit", intent["kind"])
+	assert.Equal(t, sent["action"], intent["action"])
+	upstream := map[string]any{"requestBody": intent["requestBody"], "model": veo, "upstreamModel": veo, "baseUrl": "https://aiplatform.example",
+		"authHeader": "Bearer ya29.vendor", "auth": map[string]any{"authHeader": "Bearer ya29.vendor", "projectId": "gateway-project"},
+		"upstream": map[string]any{"kind": "vendor"}}
+	forwarded := call("buildSubmitRequest", nil, upstream)
+	assert.Equal(t, "https://aiplatform.example/v1/projects/gateway-project/locations/global/publishers/google/models/"+veo+":predictLongRunning", forwarded["url"])
+	assert.Equal(t, "gateway-project", forwarded["headers"].(map[string]any)["x-goog-user-project"])
+	assert.Equal(t, sent["body"], forwarded["body"])
+	assert.Equal(t, call("extractUsage", nil, downstream), call("extractUsage", nil, upstream))
+
+	vendorOperation := "projects/gateway-project/locations/us-central1/publishers/google/models/" + veo + "/operations/op-private"
+	created := call("native", []string{"operation"}, map[string]any{"params": submitParams},
+		map[string]any{"task_id": "task_pub", "status": "SUBMITTED", "data": map[string]any{"name": vendorOperation}})
+	assert.Equal(t, map[string]any{"name": "projects/-/locations/global/publishers/google/models/" + veo + "/operations/task_pub"}, created)
+	upstreamTaskID := call("parseSubmitResponse", nil, map[string]any{}, map[string]any{"body": created})["taskId"]
+	query := call("buildQueryRequest", nil, map[string]any{"taskId": upstreamTaskID, "baseUrl": "https://gateway.example",
+		"authHeader": "Bearer sk-gateway", "auth": gatewayAuth, "upstream": gateway})
+	assert.Equal(t, route+":fetchPredictOperation", query["url"])
+	fetchParams := map[string]any{"project": "-", "location": "global", "model": veo + ":fetchPredictOperation"}
+	assert.Equal(t, map[string]any{"kind": "query", "taskIds": []any{"task_pub"}},
+		call("native", []string{"modelMethod"}, map[string]any{"params": fetchParams, "body": map[string]any{"kind": "json", "value": query["body"]}}))
+
+	for _, tc := range []struct {
+		name       string
+		task       map[string]any
+		wantStatus string
+		wantReason string
+	}{
+		{"running", map[string]any{"status": "IN_PROGRESS", "data": map[string]any{"name": vendorOperation}}, "IN_PROGRESS", ""},
+		{"succeeded", map[string]any{"status": "SUCCESS", "data": map[string]any{"name": vendorOperation, "done": true,
+			"response": map[string]any{"videos": []any{map[string]any{"mimeType": "video/mp4"}}}}}, "SUCCESS", ""},
+		{"failed by the gateway poller", map[string]any{"status": "FAILURE", "fail_reason": "task timed out", "data": map[string]any{"name": vendorOperation}}, "FAILURE", "task timed out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.task["task_id"] = "task_pub"
+			rendered := call("native", []string{"operation"}, map[string]any{"params": fetchParams}, []any{tc.task})
+			assert.Equal(t, "projects/-/locations/global/publishers/google/models/"+veo+"/operations/task_pub", rendered["name"])
+			result := call("parseTaskResult", nil, map[string]any{}, rendered)
+			assert.Equal(t, tc.wantStatus, result["status"])
+			assert.Equal(t, tc.wantReason, common.Interface2String(result["reason"]))
+		})
+	}
+}
+
+// An inline video does not fit the stored operation, which keeps only its
+// media type: the artifact is downloaded by fetching the operation again and
+// reading the bytes at contentPath. A video written to Cloud Storage stays at
+// its gcsUri.
+func TestVertexAIDeliversInlineVideoByFetchingTheOperationAgain(t *testing.T) {
+	source, err := builtinplugins.Source("vertex-ai")
+	require.NoError(t, err)
+	registry := jsplugin.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, jsplugin.Options{Key: "vertex-ai"})
+	require.NoError(t, err)
+	call := func(hook string, args ...any) any {
+		t.Helper()
+		value, err := plugin.Engine.Call(t.Context(), hook, args...)
+		require.NoError(t, err)
+		return value
+	}
+	const veo = "veo-3.0-generate-001"
+	operation := "projects/p1/locations/us-central1/publishers/google/models/" + veo + "/operations/op-1"
+	inline := map[string]any{"name": operation, "done": true, "response": map[string]any{"videos": []any{map[string]any{"bytesBase64Encoded": "AAAA", "mimeType": "video/webm"}}}}
+	stored := map[string]any{"name": operation, "done": true, "response": map[string]any{"videos": []any{map[string]any{"mimeType": "video/webm"}}}}
+	stored2 := map[string]any{"name": operation, "done": true, "response": map[string]any{"videos": []any{map[string]any{"gcsUri": "gs://bucket/video.mp4", "mimeType": "video/mp4"}}}}
+
+	assert.Equal(t, map[string]any{"status": "SUCCESS", "progress": "100%"}, decodePluginValue(t, call("parseTaskResult", map[string]any{}, inline)))
+	assert.Equal(t, map[string]any{"status": "SUCCESS", "progress": "100%", "remoteUrl": "gs://bucket/video.mp4"}, decodePluginValue(t, call("parseTaskResult", map[string]any{}, stored2)))
+	assert.Equal(t, []any{map[string]any{"key": "video", "type": "video", "mimeType": "video/webm"}}, call("listArtifacts", map[string]any{"status": "SUCCESS", "data": stored}))
+	assert.Empty(t, call("listArtifacts", map[string]any{"status": "SUCCESS", "data": stored2}))
+	assert.Empty(t, call("listArtifacts", map[string]any{"status": "IN_PROGRESS", "data": map[string]any{"name": operation}}))
+
+	descriptor := decodePluginValue(t, call("buildContentRequest", map[string]any{
+		"artifactKey": "video", "upstreamTaskId": base64.RawURLEncoding.EncodeToString([]byte(operation)), "data": stored, "baseUrl": "",
+		"authHeader": "Bearer ya29.vendor", "auth": map[string]any{"authHeader": "Bearer ya29.vendor", "projectId": "p1"},
+		"upstream": map[string]any{"kind": "vendor"}, "clientRequest": map[string]any{"method": "HEAD", "headers": map[string]any{}},
+	}))
+	assert.Equal(t, map[string]any{
+		"url":          "https://us-central1-aiplatform.googleapis.com/v1/projects/p1/locations/us-central1/publishers/google/models/" + veo + ":fetchPredictOperation",
+		"method":       "POST",
+		"headers":      map[string]any{"Accept": "application/json", "Content-Type": "application/json", "Authorization": "Bearer ya29.vendor", "x-goog-user-project": "p1"},
+		"body":         map[string]any{"operationName": operation},
+		"responseType": "json",
+		"contentPath":  []any{"response", "videos", float64(0), "bytesBase64Encoded"},
+		"mimeType":     "video/webm",
+	}, descriptor)
+
+	// v1beta1, google-genai's default version, is the same route.
+	v1 := registry.Generation().LookupDeclaredRoutes("POST", "/v1/projects/:p/locations/:l/publishers/google/models/:m")
+	v1beta1 := registry.Generation().LookupDeclaredRoutes("POST", "/v1beta1/projects/:p/locations/:l/publishers/google/models/:m")
+	require.Len(t, v1, 1)
+	require.Len(t, v1beta1, 1)
+	assert.Equal(t, v1[0].Route.Decode, v1beta1[0].Route.Decode)
+	assert.Equal(t, v1[0].Route.Render, v1beta1[0].Route.Render)
 }

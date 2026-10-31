@@ -225,28 +225,45 @@ export function ResponseModelDetails(props: {
           className='h-auto whitespace-normal'
         />
       )}
-      <DetailRow
-        label={t('Request Model')}
-        value={props.observation.requested_model}
-        mono
-      />
-      {props.isAdmin === true && (
-        <>
+      {[
+        {
+          label: t('Request Model'),
+          value: props.observation.requested_model,
+        },
+        {
+          label: t('Upstream Model'),
+          value:
+            props.observation.upstream_model ||
+            props.observation.requested_model,
+          adminOnly: true,
+        },
+        {
+          label: t('Response Model'),
+          value: props.observation.returned_model,
+          adminOnly: true,
+        },
+      ]
+        .filter((model) => !model.adminOnly || props.isAdmin === true)
+        .map((model) => (
           <DetailRow
-            label={t('Upstream Model')}
+            key={model.label}
+            label={model.label}
             value={
-              props.observation.upstream_model ||
-              props.observation.requested_model
+              <span className='inline-flex max-w-full items-start gap-1 align-top'>
+                <span className='min-w-0 leading-5 wrap-anywhere'>
+                  {model.value}
+                </span>
+                <CopyButton
+                  value={model.value}
+                  className='size-5'
+                  iconClassName='size-3'
+                  aria-label={t('Copy {{field}}', { field: model.label })}
+                />
+              </span>
             }
             mono
           />
-          <DetailRow
-            label={t('Response Model')}
-            value={props.observation.returned_model}
-            mono
-          />
-        </>
-      )}
+        ))}
       {mismatch && (
         <p className='text-muted-foreground text-xs'>
           {t(

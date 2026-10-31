@@ -7,12 +7,13 @@ export const meta = {
     en: "Google Veo video generation on Vertex AI (text-to-video and image-to-video)",
     zh: "Google Veo 视频生成（文生视频、图生视频），Vertex AI 版本",
   },
-  version: "1.0.2",
+  version: "1.2.0",
   channelTypes: [41],
   author: { name: "QuantumNous" },
   models: ["veo-3.0-generate-001", "veo-3.0-fast-generate-001", "veo-3.1-generate-preview", "veo-3.1-fast-generate-preview"],
   fetchMode: "per_task",
   auth: { type: "oauth2_jwt" },
+  upstreams: ["vendor", "new_api"],
   usageSchema: {
     // Requested video duration in seconds. Allowed values: 4, 6, 8.
     seconds: {
@@ -38,11 +39,49 @@ export const meta = {
     { label: "8s 1080p audio", facts: { seconds: 8, resolution: "1080p", generate_audio: true } },
     { label: "8s 4k audio", facts: { seconds: 8, resolution: "4k", generate_audio: true } },
   ],
+  // Vertex AI request and response bodies, for clients and for a downstream New
+  // API gateway, at both API versions Vertex serves them (google-genai defaults
+  // to v1beta1); the gateway also serves each under /vertex-ai. The model
+  // segment carries the method: predictLongRunning submits and
+  // fetchPredictOperation polls. The gateway runs every request in its own
+  // channel's project; the operation names it returns echo the path's project
+  // and location and end with the gateway task id.
+  routes: [
+    {
+      method: "POST",
+      path: "/v1/projects/:project/locations/:location/publishers/google/models/:model",
+      type: "dynamic",
+      decode: "modelMethod",
+      render: "operation",
+    },
+    {
+      method: "POST",
+      path: "/v1beta1/projects/:project/locations/:location/publishers/google/models/:model",
+      type: "dynamic",
+      decode: "modelMethod",
+      render: "operation",
+    },
+  ],
   protocols: [{ name: "openai_responses", supports: ["stream", "sync", "background"] }, "openai_video"],
 };
 
 function trimmed(value) {
   return String(value || "").trim();
+}
+function plainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+// On a New API channel the same plugin answers on another gateway, which
+// serves the Vertex AI wire format under /vertex-ai, the form every gateway
+// release serves, takes its own token as a Bearer header and runs the request
+// in its own project.
+function viaGateway(ctx) {
+  return Boolean(ctx.upstream && ctx.upstream.kind === "new_api");
+}
+function requestHeaders(ctx) {
+  const headers = { "Content-Type": "application/json", Accept: "application/json", Authorization: ctx.authHeader };
+  if (!viaGateway(ctx)) headers["x-goog-user-project"] = ctx.auth.projectId;
+  return headers;
 }
 function responsesInput(req) {
   const texts = [],
@@ -125,7 +164,7 @@ function apiBase(baseUrl, project, location) {
   return "https://" + (location === "global" ? "" : location + "-") + "aiplatform.googleapis.com/v1/projects/" + project + "/locations/" + location;
 }
 function modelURL(ctx, project, location, model, action) {
-  return apiBase(ctx.baseUrl, project, location) + "/publishers/google/models/" + model + ":" + action;
+  return apiBase(ctx.baseUrl + (viaGateway(ctx) ? "/vertex-ai" : ""), project, location) + "/publishers/google/models/" + model + ":" + action;
 }
 function decodeTaskId(value) {
   return utils.base64URLDecode(value);
@@ -135,14 +174,90 @@ function operationPart(name, marker) {
   if (start < 0) return "";
   return name.slice(start + marker.length).split("/")[0];
 }
-function dataVideo(response) {
-  const videos = response.videos || [];
-  const first = videos[0] || {};
-  const data = first.bytesBase64Encoded || response.bytesBase64Encoded || response.video || "";
-  if (!data || String(data).startsWith("data:") || String(data).startsWith("http")) return data;
-  const enc = first.mimeType || first.encoding || response.encoding || "mp4";
-  return "data:" + (String(enc).includes("/") ? enc : "video/" + enc) + ";base64," + data;
+// firstVideo is the first video of a finished operation: written to Cloud
+// Storage (gcsUri) or returned inline (bytesBase64Encoded).
+function firstVideo(operation) {
+  return plainObject((((plainObject(operation) || {}).response || {}).videos || [])[0]) || {};
 }
+// fetchOperation reads a long-running operation by name, for the poller and
+// for a video download.
+function fetchOperation(ctx, name) {
+  const project = operationPart(name, "projects/"),
+    location = operationPart(name, "locations/"),
+    model = operationPart(name, "models/");
+  if (!project || !model) throw new Error("cannot extract project or model from operation name");
+  return {
+    url: modelURL(ctx, project, location || "us-central1", model, "fetchPredictOperation"),
+    method: "POST",
+    headers: requestHeaders(ctx),
+    body: { operationName: name },
+  };
+}
+
+export const native = {
+  modelMethod: function (ctx) {
+    const segment = String((ctx.params || {}).model || "");
+    const separator = segment.lastIndexOf(":");
+    const method = separator > 0 ? segment.slice(separator + 1) : "";
+    if (!ctx.body || ctx.body.kind !== "json") throw new Error("JSON body required");
+    const body = plainObject(ctx.body.value);
+    if (!body) throw new Error("request body must be an object");
+    if (method === "fetchPredictOperation") {
+      const name = String(body.operationName || "");
+      const marker = name.lastIndexOf("/operations/");
+      if (marker < 0) throw new Error("operationName must name an operation");
+      return { kind: "query", taskIds: [name.slice(marker + "/operations/".length)] };
+    }
+    if (method !== "predictLongRunning") throw new Error("the path must name models/{model}:predictLongRunning or :fetchPredictOperation");
+    const model = segment.slice(0, separator);
+    const instances = Array.isArray(body.instances) ? body.instances : [];
+    const instance = plainObject(instances[0]);
+    if (instances.length !== 1 || !instance) throw new Error("instances must hold exactly one instance");
+    // buildSubmitRequest sends only the prompt and the first frame.
+    for (const key of Object.keys(instance)) {
+      if (key !== "prompt" && key !== "image") throw new Error("instances[0]." + key + " is not supported");
+    }
+    const metadata = Object.assign({}, plainObject(body.parameters) || {});
+    const requestBody = { model: model, prompt: instance.prompt, metadata: metadata };
+    if (metadata.durationSeconds !== undefined) {
+      requestBody.duration = metadata.durationSeconds;
+      delete metadata.durationSeconds;
+      if ([4, 6, 8].indexOf(Number(requestBody.duration)) < 0) throw new Error("durationSeconds must be one of 4, 6, or 8");
+    }
+    if (metadata.resolution !== undefined && ["720p", "1080p", "4k"].indexOf(String(metadata.resolution).toLowerCase()) < 0)
+      throw new Error("resolution must be one of 720p, 1080p, or 4k");
+    if (instance.image !== undefined) {
+      const image = plainObject(instance.image) || {};
+      const mime = trimmed(image.mimeType).toLowerCase();
+      if (!trimmed(image.bytesBase64Encoded)) throw new Error("instances[0].image must carry bytesBase64Encoded");
+      if (mime !== "image/jpeg" && mime !== "image/png") throw new Error("input image must be image/jpeg or image/png");
+      requestBody.images = ["data:" + mime + ";base64," + image.bytesBase64Encoded];
+    }
+    return { kind: "submit", model: model, action: requestBody.images ? "image_to_video" : "text_to_video", requestBody: requestBody };
+  },
+  // Submission renders one task and fetchPredictOperation a list of one. The
+  // poller can fail a task whose operation was still running; that operation
+  // is rendered done with the failure.
+  operation: function (ctx, tasks) {
+    const task = Array.isArray(tasks) ? tasks[0] : tasks;
+    const params = ctx.params || {};
+    const data = plainObject(task.data) || {};
+    const named = /\/models\/([^/]+)\/operations\//.exec(String(data.name || ""));
+    const model = named ? named[1] : String(params.model || "").split(":")[0];
+    const output = Object.assign({}, data, {
+      name: "projects/" + params.project + "/locations/" + params.location + "/publishers/google/models/" + model + "/operations/" + task.task_id,
+    });
+    if (task.status === "FAILURE" && !(plainObject(data.error) && data.error.message)) {
+      output.done = true;
+      output.error = { message: task.fail_reason || "task failed" };
+      delete output.response;
+    }
+    return output;
+  },
+  error: function (ctx, error) {
+    return { error: { code: error.httpStatus, message: error.message } };
+  },
+};
 
 export function buildSubmitRequest(ctx) {
   if (ctx.authError) throw new Error(ctx.authError);
@@ -183,9 +298,10 @@ export function buildSubmitRequest(ctx) {
     instance.image = { bytesBase64Encoded: data, mimeType: mime };
   }
   return {
-    url: modelURL(ctx, ctx.auth.projectId, region(ctx, model), model, "predictLongRunning"),
+    // A gateway runs the request in its own project, so the path names none.
+    url: modelURL(ctx, viaGateway(ctx) ? "-" : ctx.auth.projectId, region(ctx, model), model, "predictLongRunning"),
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: ctx.authHeader, "x-goog-user-project": ctx.auth.projectId },
+    headers: requestHeaders(ctx),
     body: { instances: [instance], parameters: metadata },
     action: image ? "image_to_video" : "text_to_video",
   };
@@ -209,17 +325,7 @@ export function extractUsageOnComplete() {
   return null;
 }
 export function buildQueryRequest(ctx) {
-  const name = decodeTaskId(ctx.taskId),
-    project = operationPart(name, "projects/"),
-    location = operationPart(name, "locations/"),
-    model = operationPart(name, "models/");
-  if (!project || !model) throw new Error("cannot extract project or model from operation name");
-  return {
-    url: modelURL(ctx, project, location || "us-central1", model, "fetchPredictOperation"),
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: ctx.authHeader, "x-goog-user-project": ctx.auth.projectId },
-    body: { operationName: name },
-  };
+  return fetchOperation(ctx, decodeTaskId(ctx.taskId));
 }
 export function parseTaskResult(ctx, body) {
   if (body.error && body.error.message) return { status: "FAILURE", progress: "100%", reason: body.error.message };
@@ -228,14 +334,36 @@ export function parseTaskResult(ctx, body) {
   // unrecognized.
   if (!body || typeof body !== "object" || !String(body.name || "").trim()) return { status: "UNKNOWN", reason: "unrecognized operation state" };
   if (body.done !== true) return { status: "IN_PROGRESS", progress: "50%" };
-  const url = dataVideo(body.response || {});
-  return { status: "SUCCESS", progress: "100%", url: url, remoteUrl: url };
+  const result = { status: "SUCCESS", progress: "100%" };
+  const gcsUri = trimmed(firstVideo(body).gcsUri);
+  if (gcsUri) result.remoteUrl = gcsUri;
+  return result;
 }
-export function listArtifacts() {
-  return [];
+// A video written to Cloud Storage stays there. An inline video is too large
+// for the stored operation, which keeps its media type only, so a download
+// fetches the operation again.
+export function listArtifacts(task) {
+  const video = firstVideo(task.data);
+  if (task.status !== "SUCCESS" || !Object.keys(video).length || trimmed(video.gcsUri)) return [];
+  return [{ key: "video", type: "video", mimeType: trimmed(video.mimeType) || "video/mp4" }];
 }
-export function buildContentRequest() {
-  throw new Error("artifact_not_found");
+export function buildContentRequest(ctx) {
+  if (ctx.artifactKey !== "video") throw new Error("artifact_not_found");
+  // Another gateway serves the video as the artifact of its task, the last
+  // segment of the operation name.
+  if (viaGateway(ctx)) {
+    const taskID = decodeTaskId(ctx.upstreamTaskId).split("/").pop();
+    return {
+      url: ctx.baseUrl + "/v1/tasks/" + encodeURIComponent(taskID) + "/artifacts/video/content",
+      method: ctx.clientRequest.method,
+      headers: { Authorization: "Bearer " + ctx.apiKey },
+    };
+  }
+  return Object.assign(fetchOperation(ctx, decodeTaskId(ctx.upstreamTaskId)), {
+    responseType: "json",
+    contentPath: ["response", "videos", 0, "bytesBase64Encoded"],
+    mimeType: trimmed(firstVideo(ctx.data).mimeType) || "video/mp4",
+  });
 }
 function completionMessage(ctx, task) {
   const request = (ctx && ctx.requestBody) || {};
